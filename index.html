@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="BT Sichtung">
+<meta name="theme-color" content="#111214">
+<title>BT Sichtung</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- Projektliste -->
+<section id="home" class="screen">
+  <header class="bar">
+    <h1>BT Sichtung</h1>
+    <span class="grow"></span>
+    <button id="btnHelp2" class="ghost">Hilfe</button>
+  </header>
+  <div class="home-body">
+    <div id="projList" class="proj-list"></div>
+    <label class="import-btn">
+      <input id="importInput" type="file" multiple accept=".json,.mp4,.jpg,application/json,video/mp4,image/jpeg">
+      <span>＋ Projekt importieren</span>
+    </label>
+    <p class="hint">Im Projektordner <b>alle Dateien</b> auswählen (projekt.json, Videos, Filmstreifen). Ein Projekt erneut importieren ergänzt fehlende Dateien, deine Auswahl bleibt erhalten.</p>
+    <p id="storageInfo" class="hint"></p>
+  </div>
+</section>
+
+<!-- Sichtung -->
+<section id="editor" class="screen hidden">
+  <header class="bar">
+    <button id="btnBack" class="ghost">‹ Projekte</button>
+    <h1 id="projTitle"></h1>
+    <span class="grow"></span>
+    <button id="btnHelp" class="ghost">Hilfe</button>
+    <button id="btnExport" class="primary">Auswahl exportieren</button>
+  </header>
+
+  <div class="main">
+    <div class="viewer">
+      <div class="video-wrap">
+        <video id="video" playsinline webkit-playsinline preload="auto"></video>
+        <div id="noClip" class="no-clip">Keine Aufnahme an dieser Stelle</div>
+        <div id="hud" class="hud"></div>
+      </div>
+      <div class="transport">
+        <button data-act="prevClip" title="Vorheriger Clip">⏮</button>
+        <button data-act="back1s" title="−1 s">−1s</button>
+        <button data-act="backF" title="−1 Bild (←)">◂</button>
+        <button data-act="play" id="btnPlay" class="play" title="Abspielen (Leertaste)">▶</button>
+        <button data-act="fwdF" title="+1 Bild (→)">▸</button>
+        <button data-act="fwd1s" title="+1 s">+1s</button>
+        <button data-act="nextClip" title="Nächster Clip">⏭</button>
+        <span class="sep"></span>
+        <button data-act="in" class="mark" title="In-Punkt (I)">IN</button>
+        <button data-act="out" class="mark" title="Out-Punkt (O)">OUT</button>
+        <button data-act="marker" title="Marker an dieser Stelle (M)">⚑</button>
+        <button data-act="rec" id="btnRec" class="rec" title="Sprachnotiz (N)">🎙</button>
+        <button data-act="mute" id="btnMute" title="Ton an/aus">🔊</button>
+      </div>
+      <div id="tc" class="tc"></div>
+    </div>
+
+    <aside class="side">
+      <div id="current" class="current"></div>
+      <div class="list-head">
+        <span>Auswahl</span><span id="selCount" class="muted"></span>
+      </div>
+      <div id="selList" class="sel-list"></div>
+    </aside>
+  </div>
+
+  <div class="tl-wrap">
+    <canvas id="tl"></canvas>
+    <div id="loupe" class="loupe hidden"></div>
+  </div>
+</section>
+
+<!-- Dialoge -->
+<div id="modal" class="modal hidden"><div class="modal-box" id="modalBox"></div></div>
+<div id="toast" class="toast hidden"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
