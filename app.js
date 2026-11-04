@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v3';
+const APP_VERSION = 'v3.1';
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
 
@@ -299,7 +299,7 @@ function vstate() {
     playing: S.playing, switching: !!S.switching, T: S.T ? clock(S.T) + '.' + pad((S.T % 1) * 1000, 3) : '' };
 }
 function log(ev, data) {
-  LOG.push({ t: Date.now(), ev, ...(data || {}) });
+  LOG.push({ ...(data || {}), ev, t: Date.now() });
   if (LOG.length > LOG_MAX) LOG.splice(0, LOG.length - LOG_MAX);
   logDirty = true;
   if (S.liveLog) renderLiveLog();
@@ -307,7 +307,7 @@ function log(ev, data) {
 function logLine(e) {
   const d = new Date(e.t);
   const rest = Object.entries(e).filter(([k]) => k !== 't' && k !== 'ev').map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' ');
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)} ${e.ev} ${rest}`;
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)} ${e.ev} ${rest}`.trimEnd();
 }
 function renderLiveLog() {
   const el = $('liveLog'); if (!el) return;
@@ -375,9 +375,9 @@ function applySeek() {
 video.addEventListener('seeked', () => { if (seekWanted != null && !S.playing) applySeek(); });
 
 function updateNoteTarget() {
-  const s = S.curSel && sels().includes(S.curSel) ? S.curSel : null;
+  const s = (S.curSel && sels().includes(S.curSel) ? S.curSel : null) || selAtPlayhead();
   const el = $('noteTarget'); if (!el) return;
-  if (!s) { el.textContent = '🎙 ohne Auswahl → wird Marker'; el.classList.remove('on'); return; }
+  if (!s) { el.textContent = '🎙 keine Auswahl hier → wird Marker'; el.classList.remove('on'); return; }
   const L = selLabel(s);
   el.innerHTML = `🎙 Notiz zu: <b>${esc(L.l1.replace(/^.*· /, ''))}</b> ${esc(L.l2.split(' · ').slice(0, 2).join(' · '))}${s.notes.length ? ` · ${s.notes.length} Notiz${s.notes.length > 1 ? 'en' : ''}` : ''}`;
   el.classList.add('on');
@@ -487,7 +487,7 @@ function markIn() {
   if (cur) { cur.inT = t; }
   else newOpenSel(c, t);
   S.activeTrack = c.track;
-  log('in', { clip: c.id, t });
+  log('in', { clip: c.id, pos: t });
   changed();
 }
 function newOpenSel(c, t) {
@@ -503,7 +503,7 @@ function markOut() {
   if (cur) { cur.outT = t; cur.open = false; }
   else { S.curSel = { id: uid(), kind: 'range', clipId: c.id, track: c.track, inT: 0, outT: t, open: false, stars: 0, text: '', notes: [], created: Date.now() }; sels().push(S.curSel); }
   S.activeTrack = c.track;
-  log('out', { clip: c.id, t });
+  log('out', { clip: c.id, pos: t });
   changed();
 }
 function addMarker() {
@@ -535,7 +535,9 @@ function recordHistory() {
 }
 function restoreSnap(js) {
   const d = JSON.parse(js);
-  S.state.selections = d.sel; S.state.offsets = d.off; lastSnap = js; S.curSel = null;
+  const keep = S.curSel && S.curSel.id;
+  S.state.selections = d.sel; S.state.offsets = d.off; lastSnap = js;
+  S.curSel = sels().find((x) => x.id === keep) || null;
   applyOffsets(); save(); renderSide(); requestDraw(); markSaved(false); showFrame(true); updateUndoBtns();
 }
 function undo() { if (rec || recStarting) { toast('Erst die Aufnahme beenden'); return; } if (!UNDO.length) { toast('Nichts rückgängig zu machen'); return; } REDO.push(lastSnap); restoreSnap(UNDO.pop()); log('undo', { rest: UNDO.length }); toast('Rückgängig', 900); }
@@ -628,6 +630,11 @@ function playSelection(s) {
 
 /* ---------- Sprachnotizen ---------- */
 let rec = null; let recStarting = false;
+// Auswahl unter dem Abspielzeiger (aktive Spur zuerst)
+function selAtPlayhead() {
+  const hits = sels().filter((x) => x.kind === 'range' && (() => { const [a, b] = selRange(x); return S.T >= a && S.T <= b; })());
+  return hits.find((x) => x.track === S.activeTrack) || hits[0] || null;
+}
 const recBtns = (on) => document.querySelectorAll('[data-act=rec]').forEach((b) => b.classList.toggle('on', on));
 async function toggleRec() {
   if (rec) { rec.stop(); return; }
@@ -639,7 +646,9 @@ async function toggleRec() {
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
   catch (e) { recStarting = false; log('mikro-fehler', { name: e.name, msg: e.message }); toast('Kein Mikrofonzugriff – in den Einstellungen erlauben'); return; }
-  if (!s) { s = addMarker(); toast('Keine Auswahl aktiv → Notiz als Marker gespeichert'); }
+  if (!s) s = selAtPlayhead();
+  if (!s) { s = addMarker(); toast('Keine Auswahl am Abspielzeiger → Notiz als Marker gespeichert'); }
+  S.curSel = s; renderSide();
   const target = { pid: S.proj.id, selId: s.id, t: S.T };
   const chunks = []; const t0 = Date.now();
   let r;
@@ -920,7 +929,7 @@ function markAtPlayhead() {
     flash('OUT gesetzt'); log('lang-out', { clip: c.id, in: a, out: open.outT });
   } else {
     newOpenSel(c, t);
-    flash('IN gesetzt – nochmal lange drücken für OUT'); log('lang-in', { clip: c.id, t });
+    flash('IN gesetzt – nochmal lange drücken für OUT'); log('lang-in', { clip: c.id, pos: t });
   }
   if (navigator.vibrate) navigator.vibrate(15);
   showFrame(true); changed();
@@ -1063,10 +1072,7 @@ async function buildExport() {
 }
 /* Speichern = Datei mit dem ganzen Arbeitsstand (Auswahl, Marker, Notizen, Versatz, Position).
  * Öffnen lädt sie wieder – auf jedem Gerät, auf dem das Projekt importiert ist, auch ohne Internet. */
-function saveName() {
-  const d = new Date();
-  return `${S.proj.meta.name.replace(/[^\w-]+/g, '_')}_Stand_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.json`;
-}
+function saveName() { return S.proj.meta.name.replace(/[^\w-]+/g, '_') + '_Stand.json'; }
 function markSaved(saved) {
   S.dirty = !saved;
   $('btnSave').textContent = saved ? 'Speichern' : 'Speichern •';
@@ -1180,8 +1186,14 @@ function help() {
 }
 
 /* ---------- Bedienung ---------- */
+let lastToggle = 0;
 const ACT = {
-  play: () => (S.playing ? stopPlay() : play()),
+  play: () => {
+    const now = performance.now();
+    if (now - lastToggle < 400) { log('play-doppelt-ignoriert'); return; } // iOS: Tipp + nachgereichter Klick
+    lastToggle = now;
+    return S.playing ? stopPlay() : play();
+  },
   backF: () => stepFrames(-1), fwdF: () => stepFrames(1),
   back1s: () => jumpSec(-1), fwd1s: () => jumpSec(1),
   prevClip: () => { stopPlay(); const c = prevClipStart(S.T); if (c) { S.T = c.s; showFrame(true); requestDraw(); save(); } },
@@ -1202,8 +1214,8 @@ $('videoWrap').addEventListener('pointerdown', (e) => {
   vPress.timer = setTimeout(() => { if (vPress) { vPress.long = true; log('knopf', { act: 'video-lang' }); markAtPlayhead(); } }, MARK_LONGPRESS_MS);
 });
 $('videoWrap').addEventListener('pointermove', (e) => { if (vPress && Math.hypot(e.clientX - vPress.x, e.clientY - vPress.y) > 10) { clearTimeout(vPress.timer); vPress = null; } });
-$('videoWrap').addEventListener('pointerup', () => {
-  if (!vPress) return; clearTimeout(vPress.timer);
+$('videoWrap').addEventListener('pointerup', (e) => {
+  if (!vPress) return; clearTimeout(vPress.timer); e.preventDefault();
   if (!vPress.long) { log('knopf', { act: 'video-tap' }); ACT.play(); }
   vPress = null;
 });
