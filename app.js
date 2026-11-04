@@ -1,4 +1,4 @@
-/* BT Sichtung – Footage-Auswahl auf Tablet/PC.
+/* Burning Balls – Footage-Auswahl auf Tablet/PC (Bluetacit).
  * Projekt = Ordner aus prepare.py (projekt.json + Proxies + Filmstreifen), einmal importiert → IndexedDB.
  * Zeiten: "real" = Sekunden Ortszeit (inkl. Spur-Versatz), "disp" = Timeline-Position mit gekürzten Lücken.
  * Auswahl-In/Out werden relativ zum Clip gespeichert (Sekunden im Original), damit Versatz-Änderungen sie nicht verschieben.
@@ -8,6 +8,8 @@
 const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gekürzt
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
+const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
+const APP_VERSION = 'v3';
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
 
@@ -116,7 +118,7 @@ async function showHome() {
   }
 }
 
-async function importFiles(fileList) {
+async function importFiles(fileList, dirHandle) {
   const files = [...fileList];
   const pj = files.find((f) => f.name.toLowerCase().endsWith('.json') && /projekt/i.test(f.name))
     || files.find((f) => f.name.toLowerCase().endsWith('.json'));
@@ -124,10 +126,13 @@ async function importFiles(fileList) {
   let meta;
   try { meta = JSON.parse(await pj.text()); } catch { toast('projekt.json ist nicht lesbar'); return; }
   if (meta.format === 'bt-sichtung-auswahl') { openSaveFileFromHome(pj); return; }
-  if (meta.format !== 'bt-sichtung') { toast('Keine BT-Sichtung-Projektdatei'); return; }
+  if (meta.format !== 'bt-sichtung') { toast('Keine Burning-Balls-Projektdatei'); return; }
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
 
-  const id = meta.name + '|' + meta.created;
+  // gleicher Projektname = dasselbe Projekt (auch wenn prepare.py es neu erzeugt hat) -> ergänzen statt verdoppeln
+  const same = (await DB.all('projects')).find((x) => x.meta.name === meta.name);
+  const id = same ? same.id : meta.name + '|' + meta.created;
+  log('import', { name: meta.name, dateien: files.length, vorhanden: !!same });
   const byName = new Map(files.map((f) => [f.name, f]));
   const needed = meta.clips.flatMap((c) => [c.file, c.sprite]);
   const have = new Set(await DB.keys('files'));
@@ -150,6 +155,7 @@ async function importFiles(fileList) {
   const missing = needed.filter((n) => !have.has(id + '/' + n)).length;
   const old = await DB.get('projects', id);
   await DB.put('projects', { id, meta, bytes: (old ? old.bytes : 0) + bytes, missing, opened: Date.now() });
+  if (dirHandle) await DB.put('state', dirHandle, '__dir__' + id);
   closeModal();
   toast(missing ? `Importiert – ${missing} Dateien fehlen noch` : 'Projekt importiert');
   showHome();
@@ -197,6 +203,8 @@ async function openProject(id) {
   }
   $('home').classList.add('hidden'); $('editor').classList.remove('hidden');
   $('projTitle').textContent = p.meta.name;
+  resetHistory(); markSaved(true); ensureStandFile();
+  log('projekt-offen', { name: p.meta.name, clips: S.clips.length, auswahl: S.state.selections.length });
   resizeCanvas();
   showFrame(true);
   renderSide();
@@ -208,13 +216,16 @@ function applyOffsets() {
 }
 
 let saveTimer = null;
-function save() {
+function save(now) {
   if (!S.proj || !S.state) return;
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    S.state.activeTrack = S.activeTrack; S.state.T = S.T; S.state.pps = S.pps;
-    DB.put('state', S.state, S.proj.id);
-  }, 400);
+  const pid = S.proj.id, st = S.state; // Projekt jetzt festhalten – ein Projektwechsel darf nicht umlenken
+  const write = () => {
+    if (S.state === st) { st.activeTrack = S.activeTrack; st.T = S.T; st.pps = S.pps; }
+    DB.put('state', JSON.parse(JSON.stringify(st)), pid)
+      .catch((e) => { log('speichern-fehler', { msg: String(e && e.message || e) }); toast('Lokales Speichern fehlgeschlagen – bitte „Speichern“ (Datei) nutzen', 4000); });
+  };
+  if (now) write(); else saveTimer = setTimeout(write, 300);
 }
 
 /* ---------- Zeitachse mit gekürzten Lücken ---------- */
@@ -277,6 +288,58 @@ function prevClipStart(r) {
 /* ---------- Video ---------- */
 const video = $('video');
 let seekWanted = null;
+
+/* ---------- Log ----------
+ * Ringpuffer, alle 2 s in IndexedDB gesichert; steckt auch in jeder Speicherdatei.
+ * Ansehen/teilen über Hilfe → Log, Live-Log blendet die letzten Zeilen über dem Video ein. */
+const LOG = []; const LOG_MAX = 4000; let logDirty = false;
+function vstate() {
+  return { cid: (video.dataset.cid || '').slice(0, 40), ct: +video.currentTime.toFixed(3), rs: video.readyState, ns: video.networkState,
+    paused: video.paused, seeking: video.seeking, ended: video.ended, err: video.error ? video.error.code : 0,
+    playing: S.playing, switching: !!S.switching, T: S.T ? clock(S.T) + '.' + pad((S.T % 1) * 1000, 3) : '' };
+}
+function log(ev, data) {
+  LOG.push({ t: Date.now(), ev, ...(data || {}) });
+  if (LOG.length > LOG_MAX) LOG.splice(0, LOG.length - LOG_MAX);
+  logDirty = true;
+  if (S.liveLog) renderLiveLog();
+}
+function logLine(e) {
+  const d = new Date(e.t);
+  const rest = Object.entries(e).filter(([k]) => k !== 't' && k !== 'ev').map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' ');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)} ${e.ev} ${rest}`;
+}
+function renderLiveLog() {
+  const el = $('liveLog'); if (!el) return;
+  el.textContent = LOG.slice(-8).map(logLine).join('\n');
+}
+function flushLog() {
+  if (!logDirty || !DB.db) return;
+  logDirty = false;
+  DB.put('state', LOG.slice(-LOG_MAX), '__log__').catch(() => { logDirty = true; });
+}
+setInterval(flushLog, 2000);
+window.addEventListener('error', (e) => log('js-error', { msg: e.message, at: (e.filename || '').split('/').pop() + ':' + e.lineno }));
+window.addEventListener('unhandledrejection', (e) => log('promise-error', { msg: String((e.reason && e.reason.message) || e.reason) }));
+// Video-Ereignisse; Seeks nur beim Abspielen/Wechseln (beim Scrubben wären es Hunderte)
+['loadedmetadata', 'canplay', 'play', 'playing', 'pause', 'waiting', 'stalled', 'ended', 'error', 'emptied', 'abort', 'seeking', 'seeked'].forEach((ev) =>
+  video.addEventListener(ev, () => { if ((ev === 'seeking' || ev === 'seeked') && !S.playing && !S.switching) return; log('v:' + ev, vstate()); }));
+// Video-Fehler: Datei neu anbinden statt hängen zu bleiben
+video.addEventListener('error', async () => {
+  const cid = video.dataset.cid; if (!cid || !S.proj) return;
+  S.retry = S.retry || {}; S.retry[cid] = (S.retry[cid] || 0) + 1;
+  if (S.retry[cid] > 2) { log('video-defekt', { cid }); stopPlay(); toast('Clip lässt sich nicht abspielen: ' + cid, 4000); return; }
+  const c = S.byId.get(cid); const b = await DB.get('files', S.proj.id + '/' + c.file);
+  if (!b) return;
+  URL.revokeObjectURL(S.urls.get(cid)); S.urls.set(cid, URL.createObjectURL(b));
+  video.dataset.cid = ''; log('video-recover', { cid }); showFrame(true);
+});
+// Wiedergabe von außen pausiert (z. B. iOS-Unterbrechung) → Zustand angleichen statt „hängen“
+video.addEventListener('pause', () => {
+  if (S.playing && !S.switching && !video.ended && !video.seeking) {
+    setTimeout(() => { if (S.playing && video.paused && !S.switching) { log('pause-extern', vstate()); stopPlay(); } }, 400);
+  }
+});
 function showFrame(exact) {
   const c = shownClip();
   $('noClip').classList.toggle('hidden', !!c);
@@ -284,7 +347,12 @@ function showFrame(exact) {
   if (!c) { updateHud(null); return; }
   const local = clamp(S.T - c.s, 0, c.dur - 0.001);
   if (video.dataset.cid !== c.id) {
-    if (c.missing) { $('noClip').textContent = 'Datei fehlt: ' + c.file; $('noClip').classList.remove('hidden'); video.classList.add('hidden'); updateHud(c); return; }
+    if (c.missing) {
+      $('noClip').textContent = 'Datei fehlt: ' + c.file; $('noClip').classList.remove('hidden'); video.classList.add('hidden');
+      if (S.playing) stopPlay();
+      video.removeAttribute('src'); video.dataset.cid = ''; video.load();
+      log('datei-fehlt', { clip: c.id }); updateHud(c); return;
+    }
     $('noClip').textContent = 'Keine Aufnahme an dieser Stelle';
     video.dataset.cid = c.id;
     video.src = S.urls.get(c.id);
@@ -306,6 +374,14 @@ function applySeek() {
 }
 video.addEventListener('seeked', () => { if (seekWanted != null && !S.playing) applySeek(); });
 
+function updateNoteTarget() {
+  const s = S.curSel && sels().includes(S.curSel) ? S.curSel : null;
+  const el = $('noteTarget'); if (!el) return;
+  if (!s) { el.textContent = '🎙 ohne Auswahl → wird Marker'; el.classList.remove('on'); return; }
+  const L = selLabel(s);
+  el.innerHTML = `🎙 Notiz zu: <b>${esc(L.l1.replace(/^.*· /, ''))}</b> ${esc(L.l2.split(' · ').slice(0, 2).join(' · '))}${s.notes.length ? ` · ${s.notes.length} Notiz${s.notes.length > 1 ? 'en' : ''}` : ''}`;
+  el.classList.add('on');
+}
 function updateHud(c) {
   const fps = c ? c.fps : 25;
   const tr = c && S.tracks.find((t) => t.id === c.track);
@@ -313,21 +389,55 @@ function updateHud(c) {
   $('tc').innerHTML = `<b>${clock(S.T, fps)}</b>` + (c ? ` · Clip ${tcClip(S.T - c.s, fps)} / ${tcClip(c.dur, fps)} · ${fps} fps` : '');
 }
 
-function play() {
-  const c = shownClip();
-  if (!c) { const n = nextClipStart(S.T); if (!n) return; S.T = n.s; showFrame(true); }
-  S.playing = true; $('btnPlay').textContent = '⏸';
+function setPlayIcons(on) { document.querySelectorAll('[data-act=play]').forEach((b) => { b.textContent = on ? '⏸' : '▶'; }); }
+async function play() {
+  let c = shownClip();
+  if (!c) { const n = nextClipStart(S.T); if (!n) { log('play-ende'); return; } S.T = n.s; showFrame(true); c = n; }
+  if (c.missing) { toast('Datei fehlt: ' + c.file); log('play-datei-fehlt', { clip: c.id }); return; }
+  if (video.dataset.cid !== c.id) showFrame(true);
+  S.playing = true; setPlayIcons(true);
   video.muted = S.muted;
-  const p = video.play(); if (p) p.catch(() => {});
+  S.lastCT = -1; S.lastAdvance = performance.now();
   clearInterval(S.playTimer); S.playTimer = setInterval(playTick, 33);
+  log('play', vstate());
+  try { await video.play(); }
+  catch (err) {
+    log('play-rejected', { name: err.name, msg: err.message, ...vstate() });
+    if (err.name === 'AbortError') return; // Quelle wurde gewechselt – der Wechsel startet neu
+    if (err.name === 'NotAllowedError' && !video.muted) {
+      video.muted = true;
+      try { await video.play(); S.muted = true; updateMute(); toast('Ton wurde blockiert – 🔊 antippen'); return; }
+      catch (e2) { log('play-rejected-muted', { name: e2.name }); }
+    }
+    stopPlay(); toast('Abspielen ging nicht – steht im Log');
+  }
 }
 function stopPlay() {
   if (!S.playing) return;
-  S.playing = false; $('btnPlay').textContent = '▶';
-  clearInterval(S.playTimer); S.switching = false; video.pause(); save();
+  S.playing = false; setPlayIcons(false);
+  clearInterval(S.playTimer); clearTimeout(S.switchTimer); video.removeEventListener('seeked', resumeAfterSwitch);
+  S.switching = false; video.pause(); save();
+  log('stop', vstate());
+}
+function resumeAfterSwitch() {
+  clearTimeout(S.switchTimer); video.removeEventListener('seeked', resumeAfterSwitch);
+  S.switching = false;
+  if (S.playing) video.play().catch((e) => {
+    log('play-rejected', { name: e.name, msg: e.message, nach: 'wechsel', ...vstate() });
+    if (e.name !== 'AbortError') { stopPlay(); toast('Abspielen ging nicht – steht im Log'); }
+  });
 }
 function playTick() {
   if (!S.playing) return;
+  // Wächter: laut App läuft es, aber die Videozeit bewegt sich nicht (egal ob seeking/switching)
+  if (video.currentTime !== S.lastCT) { S.lastCT = video.currentTime; S.lastAdvance = performance.now(); }
+  else if (performance.now() - S.lastAdvance > 2500) {
+    S.stuck = (S.stuck || 0) + 1; S.lastAdvance = performance.now();
+    log('steht', { versuch: S.stuck, ...vstate() });
+    if (S.stuck > 3) { S.stuck = 0; stopPlay(); toast('Wiedergabe hängt – bitte nochmal Play (steht im Log)'); return; }
+    S.switching = false; video.removeEventListener('seeked', resumeAfterSwitch);
+    video.play().catch((e) => log('play-rejected', { name: e.name, nach: 'steht' }));
+  }
   const c = S.byId.get(video.dataset.cid);
   if (c && !video.seeking && !S.switching) {
     S.T = c.s + video.currentTime;
@@ -336,9 +446,15 @@ function playTick() {
     if (atEnd || (want && want.id !== c.id)) {
       let t = atEnd ? c.s + c.dur + 0.001 : S.T;
       if (!shownClip(t)) { const n = nextClipStart(t - 0.002); if (!n) { stopPlay(); requestDraw(); return; } t = n.s + 0.001; }
-      S.T = t; S.switching = true; showFrame(true);
-      video.addEventListener('seeked', () => { S.switching = false; if (S.playing) video.play().catch(() => {}); }, { once: true });
+      S.T = t; S.switching = true; log('wechsel', { nach: (shownClip(t) || {}).id, ...vstate() });
+      showFrame(true);
+      video.removeEventListener('seeked', resumeAfterSwitch);
+      video.addEventListener('seeked', resumeAfterSwitch, { once: true });
+      // Wächter: kommt kein 'seeked' (iOS verschluckt es manchmal), nach 1,5 s trotzdem weiter
+      clearTimeout(S.switchTimer);
+      S.switchTimer = setTimeout(() => { if (S.switching) { log('wechsel-haengt', vstate()); resumeAfterSwitch(); } }, 1500);
     }
+    if (video.currentTime > 0.05) S.stuck = 0;
     updateHud(shownClip());
   }
   requestDraw();
@@ -348,7 +464,7 @@ function stepFrames(n) {
   stopPlay();
   const c = shownClip(); const fps = c ? c.fps : 25;
   const local = c ? S.T - c.s : 0;
-  const f = Math.round(local * fps) + n;
+  const f = (c ? frameOf(local, c) : Math.floor(local * fps)) + n;
   S.T = c ? c.s + clamp(f / fps, 0, c.dur - 1 / fps) : S.T + n / fps;
   showFrame(true); requestDraw(); save();
 }
@@ -360,16 +476,24 @@ function jumpSec(sec) {
 
 /* ---------- Auswahl ---------- */
 const sels = () => S.state.selections;
-function snap(local, c) { return clamp(Math.round(local * c.fps) / c.fps, 0, c.dur); }
+// Bildindex wie in applySeek(): das gerade angezeigte Bild ist floor(t·fps) → In/Out/±1 nutzen dieselbe Rundung
+const frameOf = (local, c) => Math.floor(local * c.fps + 1e-6);
+function snap(local, c) { return clamp(frameOf(local, c) / c.fps, 0, c.dur); }
 function markIn() {
   const c = clipAt(S.activeTrack, S.T) || shownClip();
   if (!c) { toast('Keine Aufnahme am Playhead'); return; }
   const t = snap(S.T - c.s, c);
   const cur = S.curSel && S.curSel.kind === 'range' && S.curSel.clipId === c.id && t < S.curSel.outT && S.curSel.open ? S.curSel : null;
   if (cur) { cur.inT = t; }
-  else { S.curSel = { id: uid(), kind: 'range', clipId: c.id, track: c.track, inT: t, outT: snap(c.dur, c), open: true, stars: 0, text: '', notes: [], created: Date.now() }; sels().push(S.curSel); }
+  else newOpenSel(c, t);
   S.activeTrack = c.track;
+  log('in', { clip: c.id, t });
   changed();
+}
+function newOpenSel(c, t) {
+  for (const s of sels()) if (s.open) s.open = false; // höchstens eine offene Auswahl
+  S.curSel = { id: uid(), kind: 'range', clipId: c.id, track: c.track, inT: t, outT: snap(c.dur, c), open: true, stars: 0, text: '', notes: [], created: Date.now() };
+  sels().push(S.curSel);
 }
 function markOut() {
   const c = clipAt(S.activeTrack, S.T) || shownClip();
@@ -379,6 +503,7 @@ function markOut() {
   if (cur) { cur.outT = t; cur.open = false; }
   else { S.curSel = { id: uid(), kind: 'range', clipId: c.id, track: c.track, inT: 0, outT: t, open: false, stars: 0, text: '', notes: [], created: Date.now() }; sels().push(S.curSel); }
   S.activeTrack = c.track;
+  log('out', { clip: c.id, t });
   changed();
 }
 function addMarker() {
@@ -390,12 +515,35 @@ function selRange(s) {   // real-Zeiten der Auswahl
   const c = S.byId.get(s.clipId); return [c.s + s.inT, c.s + s.outT];
 }
 async function deleteSel(s) {
-  for (const n of s.notes) await DB.del('notes', n.id);
+  // Sprachnotizen bleiben gespeichert, damit „Rückgängig“ sie zurückholen kann
+  log('loeschen', { id: s.id, kind: s.kind });
   S.state.selections = sels().filter((x) => x !== s);
   if (S.curSel === s) S.curSel = null;
   changed();
 }
-function changed() { save(); renderSide(); requestDraw(); markSaved(false); }
+function changed() { S.rev = (S.rev || 0) + 1; save(); renderSide(); requestDraw(); markSaved(false); recordHistory(); }
+
+/* ---------- Rückgängig / Wiederholen ----------
+ * Nach jeder Änderung wird der Stand (Auswahl + Versatz) verglichen; Unterschiede kommen auf den Stapel. */
+const UNDO = []; const REDO = []; let lastSnap = null;
+const snapState = () => JSON.stringify({ sel: S.state.selections, off: S.state.offsets });
+function resetHistory() { UNDO.length = 0; REDO.length = 0; lastSnap = snapState(); updateUndoBtns(); }
+function recordHistory() {
+  const now = snapState();
+  if (lastSnap !== null && now !== lastSnap) { UNDO.push(lastSnap); if (UNDO.length > 300) UNDO.shift(); REDO.length = 0; }
+  lastSnap = now; updateUndoBtns();
+}
+function restoreSnap(js) {
+  const d = JSON.parse(js);
+  S.state.selections = d.sel; S.state.offsets = d.off; lastSnap = js; S.curSel = null;
+  applyOffsets(); save(); renderSide(); requestDraw(); markSaved(false); showFrame(true); updateUndoBtns();
+}
+function undo() { if (rec || recStarting) { toast('Erst die Aufnahme beenden'); return; } if (!UNDO.length) { toast('Nichts rückgängig zu machen'); return; } REDO.push(lastSnap); restoreSnap(UNDO.pop()); log('undo', { rest: UNDO.length }); toast('Rückgängig', 900); }
+function redo() { if (rec || recStarting || !REDO.length) return; UNDO.push(lastSnap); restoreSnap(REDO.pop()); log('redo'); toast('Wiederholt', 900); }
+function updateUndoBtns() {
+  document.querySelectorAll('[data-act=undo]').forEach((b) => { b.disabled = !UNDO.length; });
+  document.querySelectorAll('[data-act=redo]').forEach((b) => { b.disabled = !REDO.length; });
+}
 function nudge(s, which, frames) {
   const c = S.byId.get(s.clipId);
   if (which === 'in') s.inT = clamp(snap(s.inT + frames / c.fps, c), 0, s.outT - 1 / c.fps);
@@ -416,7 +564,7 @@ function trackOf(id) { return S.tracks.find((t) => t.id === id) || { label: id, 
 function selLabel(s) {
   if (s.kind === 'marker') return { dot: '#fff', l1: `⚑ Marker ${clock(s.t)}`, l2: s.text || '' };
   const c = S.byId.get(s.clipId); const tr = trackOf(s.track);
-  return { dot: tr.color, l1: `${tr.label} · ${c.name}`, l2: `${clock(c.s + s.inT)} · ${durTxt(s.outT - s.inT)}${s.text ? ' · ' + s.text : ''}` };
+  return { dot: tr.color, l1: `${tr.label} · ${c.name}`, l2: `${clock(c.s + s.inT)} · ${s.open ? 'nur IN – OUT fehlt' : durTxt(s.outT - s.inT)}${s.text ? ' · ' + s.text : ''}` };
 }
 function renderSide() {
   const list = $('selList');
@@ -435,6 +583,7 @@ function renderSide() {
   renderCurrent();
 }
 function renderCurrent() {
+  updateNoteTarget();
   const box = $('current'); const s = S.curSel;
   if (!s || !sels().includes(s)) { box.innerHTML = ''; return; }
   const L = selLabel(s);
@@ -455,7 +604,7 @@ function renderCurrent() {
       <button data-k="pn${i}">▶</button><button data-k="dn${i}" class="ghost danger">✕</button></div>`).join('')}</div>`;
   box.innerHTML = h;
   box.querySelector('#selText').oninput = (e) => { s.text = e.target.value; save(); };
-  box.querySelector('#selText').onchange = () => renderSide();
+  box.querySelector('#selText').onchange = () => changed();
   box.querySelectorAll('button[data-k]').forEach((b) => b.onclick = async () => {
     const k = b.dataset.k;
     if (k === 'del') return deleteSel(s);
@@ -466,7 +615,7 @@ function renderCurrent() {
     if (k === 'playsel') return playSelection(s);
     if (k.startsWith('star')) { const n = +k.slice(4); s.stars = s.stars === n ? 0 : n; return changed(); }
     if (k.startsWith('pn')) return playNote(s.notes[+k.slice(2)]);
-    if (k.startsWith('dn')) { const n = s.notes[+k.slice(2)]; await DB.del('notes', n.id); s.notes = s.notes.filter((x) => x !== n); return changed(); }
+    if (k.startsWith('dn')) { const n = s.notes[+k.slice(2)]; s.notes = s.notes.filter((x) => x !== n); return changed(); }
   });
 }
 let selStop = null;
@@ -478,30 +627,41 @@ function playSelection(s) {
 }
 
 /* ---------- Sprachnotizen ---------- */
-let rec = null;
+let rec = null; let recStarting = false;
+const recBtns = (on) => document.querySelectorAll('[data-act=rec]').forEach((b) => b.classList.toggle('on', on));
 async function toggleRec() {
   if (rec) { rec.stop(); return; }
+  if (recStarting) return;
+  recStarting = true;
+  stopPlay();
   let s = S.curSel && sels().includes(S.curSel) ? S.curSel : null;
   const mime = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm'].find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m));
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-  catch { toast('Kein Mikrofonzugriff – in den Einstellungen erlauben'); return; }
-  stopPlay();
+  catch (e) { recStarting = false; log('mikro-fehler', { name: e.name, msg: e.message }); toast('Kein Mikrofonzugriff – in den Einstellungen erlauben'); return; }
   if (!s) { s = addMarker(); toast('Keine Auswahl aktiv → Notiz als Marker gespeichert'); }
+  const target = { pid: S.proj.id, selId: s.id, t: S.T };
   const chunks = []; const t0 = Date.now();
-  rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
-  rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-  rec.onstop = async () => {
-    stream.getTracks().forEach((t) => t.stop());
-    const blob = new Blob(chunks, { type: rec.mimeType || mime || 'audio/mp4' });
+  let r;
+  try { r = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); }
+  catch (e) { recStarting = false; stream.getTracks().forEach((x) => x.stop()); log('mikro-fehler', { name: e.name }); toast('Aufnahme nicht möglich'); return; }
+  r.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  r.onstop = async () => {
+    stream.getTracks().forEach((x) => x.stop());
+    rec = null; recBtns(false);
+    const blob = new Blob(chunks, { type: r.mimeType || mime || 'audio/mp4' });
     const n = { id: uid(), mime: blob.type, dur: (Date.now() - t0) / 1000, created: Date.now() };
     await DB.put('notes', blob, n.id);
-    s.notes.push(n); rec = null;
-    $('btnRec').classList.remove('on');
+    if (!S.proj || S.proj.id !== target.pid) { log('notiz-projekt-gewechselt', target); toast('Notiz gespeichert, aber Projekt gewechselt'); return; }
+    // Ziel über die ID neu suchen – Undo/Löschen kann das alte Objekt ersetzt haben
+    let dest = sels().find((x) => x.id === target.selId);
+    if (!dest) { dest = { id: uid(), kind: 'marker', t: target.t, stars: 0, text: '', notes: [], created: Date.now() }; sels().push(dest); toast('Auswahl war weg → Notiz als Marker gespeichert'); }
+    dest.notes.push(n); S.curSel = dest;
+    log('notiz-ende', { s: n.dur.toFixed(1), zu: dest.id });
     changed();
   };
-  rec.start();
-  $('btnRec').classList.add('on');
+  rec = r; recStarting = false;
+  r.start(); recBtns(true); log('notiz-start', { zu: s.id });
 }
 let noteAudio = null;
 async function playNote(n) {
@@ -539,16 +699,20 @@ function draw() {
   if (!S.proj) return;
   const w = W(), h = cv.height / (window.devicePixelRatio || 1);
   const { lh, y } = laneGeom();
+  const FS = S.fs; // Vollbild: Hintergrund durchsichtig, Clips halbtransparent über dem Video
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = '#111214'; ctx.fillRect(0, 0, w, h);
+  if (!FS) { ctx.fillStyle = '#111214'; ctx.fillRect(0, 0, w, h); }
   const dNow = viewD();
+  const selByClip = new Map();
+  for (const s of sels()) if (s.kind === 'range') { if (!selByClip.has(s.clipId)) selByClip.set(s.clipId, []); selByClip.get(s.clipId).push(s); }
   const cx = HEAD + (w - HEAD) / 2;
   const dL = dNow - (cx - HEAD) / S.pps, dR = dNow + (w - cx) / S.pps;
 
   // Lanes
   S.tracks.forEach((t, i) => {
-    ctx.fillStyle = t.id === S.activeTrack ? '#1d2127' : '#16181b';
+    ctx.fillStyle = FS ? (t.id === S.activeTrack ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.03)') : (t.id === S.activeTrack ? '#1d2127' : '#16181b');
     ctx.fillRect(HEAD, y(i), w - HEAD, lh - 4);
+    if (t.id === S.activeTrack) { ctx.fillStyle = t.color + '26'; ctx.fillRect(HEAD, y(i), w - HEAD, lh - 4); }
   });
 
   // Clips
@@ -560,6 +724,7 @@ function draw() {
     const x0 = cx + (d0 - dNow) * S.pps, x1 = cx + (d1 - dNow) * S.pps;
     const yy = y(ti) + 2, hh = lh - 8;
     ctx.save(); ctx.beginPath(); roundRect(x0, yy, Math.max(2, x1 - x0), hh, 5); ctx.clip();
+    if (FS) ctx.globalAlpha = 0.55;
     ctx.fillStyle = '#2a2e34'; ctx.fillRect(x0, yy, x1 - x0, hh);
     const img = S.sprites.get(c.id);
     if (img && img.complete && img.naturalWidth) {
@@ -572,9 +737,19 @@ function draw() {
       }
     }
     ctx.fillStyle = c.missing ? '#000a' : '#0003'; ctx.fillRect(x0, yy, x1 - x0, hh);
+    // Clip hat Auswahl → alles außerhalb ausgrauen (bleibt sichtbar, nur gedämpft)
+    const cs = selByClip.get(c.id);
+    if (cs) {
+      const iv = cs.map((s) => [xOf(c.s + s.inT), xOf(c.s + s.outT)]).sort((a, b) => a[0] - b[0]);
+      ctx.fillStyle = 'rgba(14,15,17,0.68)';
+      let cur = x0;
+      for (const [a, b] of iv) { if (a > cur) ctx.fillRect(cur, yy, a - cur, hh); cur = Math.max(cur, b); }
+      if (cur < x1) ctx.fillRect(cur, yy, x1 - cur, hh);
+    }
     ctx.restore();
-    ctx.strokeStyle = trackOf(c.track).color; ctx.lineWidth = 1.5;
+    ctx.strokeStyle = trackOf(c.track).color; ctx.lineWidth = 1.5; if (FS) ctx.globalAlpha = 0.7;
     ctx.beginPath(); roundRect(x0 + 0.5, yy + 0.5, Math.max(2, x1 - x0 - 1), hh - 1, 5); ctx.stroke();
+    ctx.globalAlpha = 1;
     if (x1 - x0 > 70) {
       ctx.fillStyle = '#fff'; ctx.font = '600 11px -apple-system, Segoe UI, sans-serif';
       ctx.shadowColor = '#000'; ctx.shadowBlur = 3;
@@ -597,10 +772,23 @@ function draw() {
     const x0 = xOf(c.s + s.inT), x1 = xOf(c.s + s.outT);
     if (x1 < HEAD || x0 > w) continue;
     const yy = y(ti) + 2, hh = lh - 8, cur = s === S.curSel;
-    ctx.fillStyle = cur ? '#f2c14e55' : '#f2c14e30'; ctx.fillRect(x0, yy, x1 - x0, hh);
+    if (s.open) {
+      // nur In gesetzt: gestrichelt bis Clipende, Out kommt mit dem nächsten langen Drücken
+      ctx.fillStyle = '#f2c14e22'; ctx.fillRect(x0, yy, x1 - x0, hh);
+      ctx.strokeStyle = '#f2c14e'; ctx.setLineDash([5, 4]); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(x0, yy + hh - 2); ctx.lineTo(x1, yy + hh - 2); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = '#f2c14e'; ctx.fillRect(x0 - 3, yy, 6, hh);
+      ctx.font = '700 11px -apple-system, Segoe UI, sans-serif'; ctx.fillText('IN', x0 + 6, yy + 13);
+      continue;
+    }
+    ctx.fillStyle = cur ? '#f2c14e40' : '#f2c14e1c'; ctx.fillRect(x0, yy, x1 - x0, hh);
     ctx.fillStyle = '#f2c14e'; ctx.fillRect(x0, yy + hh - 5, x1 - x0, 5);
     ctx.fillRect(x0 - (cur ? 3 : 1.5), yy, cur ? 6 : 3, hh);
     ctx.fillRect(x1 - (cur ? 3 : 1.5), yy, cur ? 6 : 3, hh);
+    if (cur) {
+      ctx.save(); ctx.shadowColor = '#f2c14e'; ctx.shadowBlur = 12; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      ctx.beginPath(); roundRect(x0 - 1, yy - 1, x1 - x0 + 2, hh + 2, 4); ctx.stroke(); ctx.restore();
+    }
     if (s.stars || s.notes.length) {
       ctx.fillStyle = '#1a1400'; ctx.font = '700 11px sans-serif';
       ctx.fillText('★'.repeat(s.stars) + (s.notes.length ? ' 🎙' : ''), x0 + 6, yy + hh - 9);
@@ -620,10 +808,10 @@ function draw() {
   ctx.restore();
 
   // Lineal
-  ctx.fillStyle = '#1a1c1f'; ctx.fillRect(0, 0, w, RULER);
+  ctx.fillStyle = FS ? 'rgba(0,0,0,0.35)' : '#1a1c1f'; ctx.fillRect(0, 0, w, RULER);
   const steps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
   const st = steps.find((s) => s * S.pps >= 90) || 3600;
-  ctx.fillStyle = '#8b9098'; ctx.strokeStyle = '#3a3f46'; ctx.font = '11px ui-monospace, Menlo, Consolas, monospace';
+  ctx.fillStyle = FS ? '#e8e8ec' : '#8b9098'; ctx.strokeStyle = FS ? '#ffffff88' : '#3a3f46'; ctx.font = (FS ? '600 ' : '') + '11px ui-monospace, Menlo, Consolas, monospace';
   for (const sg of S.axis.segs) {
     const sd1 = sg.d0 + sg.r1 - sg.r0; if (sd1 < dL || sg.d0 > dR) continue;
     for (let r = Math.ceil(sg.r0 / st) * st; r <= sg.r1; r += st) {
@@ -635,14 +823,15 @@ function draw() {
 
   // Spurköpfe
   S.tracks.forEach((t, i) => {
-    ctx.fillStyle = t.id === S.activeTrack ? '#23262a' : '#1a1c1f'; ctx.fillRect(0, y(i), HEAD - 4, lh - 4);
-    ctx.fillStyle = t.color; ctx.fillRect(0, y(i), 4, lh - 4);
+    ctx.fillStyle = FS ? (t.id === S.activeTrack ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.35)') : (t.id === S.activeTrack ? '#23262a' : '#1a1c1f');
+    ctx.fillRect(0, y(i), HEAD - 4, lh - 4);
+    ctx.fillStyle = t.color; ctx.fillRect(0, y(i), t.id === S.activeTrack ? 7 : 4, lh - 4);
     ctx.fillStyle = t.id === S.activeTrack ? '#fff' : '#b8bcc2'; ctx.font = '600 12px -apple-system, Segoe UI, sans-serif';
     wrapText(t.label, 10, y(i) + 16, HEAD - 16, 14);
     const off = S.state.offsets[t.id] || 0;
     if (off) { ctx.fillStyle = '#f2c14e'; ctx.font = '10px sans-serif'; ctx.fillText((off > 0 ? '+' : '') + off.toFixed(1) + ' s', 10, y(i) + lh - 10); }
   });
-  ctx.fillStyle = '#1a1c1f'; ctx.fillRect(0, 0, HEAD - 4, RULER);
+  if (!FS) { ctx.fillStyle = '#1a1c1f'; ctx.fillRect(0, 0, HEAD - 4, RULER); }
   ctx.fillStyle = '#8b9098'; ctx.font = '10px sans-serif'; ctx.fillText('Spuren', 10, 16);
 
   // Playhead
@@ -692,6 +881,8 @@ cv.addEventListener('pointerdown', (e) => {
   const r = cv.getBoundingClientRect();
   ptrs.set(e.pointerId, { x: e.clientX - r.left, y: e.clientY - r.top });
   if (ptrs.size === 2) {
+    if (g) clearTimeout(g.lp);
+    viewLock = null; $('loupe').classList.add('hidden');
     const [a, b] = [...ptrs.values()];
     g = { type: 'pinch', d0: Math.hypot(a.x - b.x, a.y - b.y), pps0: S.pps };
     return;
@@ -700,15 +891,44 @@ cv.addEventListener('pointerdown', (e) => {
   const h = hit(p.x, p.y);
   g = { ...h, x0: p.x, y0: p.y, lastX: p.x, moved: false, t0: performance.now(), fine: false, dT: r2d(S.T) };
   stopPlay();
+  if (h.type === 'lane' || h.type === 'sel' || h.type === 'empty') g.lp = setTimeout(longPressMark, MARK_LONGPRESS_MS);
   if (h.type === 'handle') {
     viewLock = r2d(S.T);
-    S.curSel = h.s; renderSide(); requestDraw();
+    S.curSel = h.s; S.activeTrack = h.s.track; renderSide(); requestDraw();
     g.lp = setTimeout(() => startFine(), LONGPRESS_MS);
     const c = S.byId.get(h.s.clipId);
     g.base = h.which === 'in' ? h.s.inT : h.s.outT;
     g.clip = c;
   }
 });
+function longPressMark() {
+  if (!g || g.moved || ptrs.size !== 1 || !['lane', 'sel', 'empty'].includes(g.type)) return;
+  g.lpDone = true;
+  markAtPlayhead();
+}
+// In bzw. Out am Abspielzeiger: erstes langes Drücken = In, zweites = Out (Timeline oder Video)
+function markAtPlayhead() {
+  stopPlay();
+  const c = clipAt(S.activeTrack, S.T) || shownClip();
+  if (!c) { toast('Am Abspielzeiger ist kein Clip'); return; }
+  S.activeTrack = c.track;
+  const t = snap(S.T - c.s, c);
+  const open = sels().find((s) => s.kind === 'range' && s.open && s.clipId === c.id);
+  if (open) {
+    let a = Math.min(open.inT, t), b = Math.max(open.inT, t) + 1 / c.fps; // Out schließt das Bild ein
+    open.inT = a; open.outT = Math.min(b, c.dur); open.open = false; S.curSel = open;
+    flash('OUT gesetzt'); log('lang-out', { clip: c.id, in: a, out: open.outT });
+  } else {
+    newOpenSel(c, t);
+    flash('IN gesetzt – nochmal lange drücken für OUT'); log('lang-in', { clip: c.id, t });
+  }
+  if (navigator.vibrate) navigator.vibrate(15);
+  showFrame(true); changed();
+}
+function flash(msg) {
+  const L = $('loupe'); L.textContent = msg; L.classList.remove('hidden');
+  clearTimeout(flash._t); flash._t = setTimeout(() => L.classList.add('hidden'), 1300);
+}
 function startFine() {
   if (!g || g.type !== 'handle') return;
   g.fine = true; g.fineX = g.lastX; g.base = g.which === 'in' ? g.s.inT : g.s.outT;
@@ -724,6 +944,7 @@ cv.addEventListener('pointermove', (e) => {
     S.pps = clamp(g.pps0 * Math.hypot(a.x - b.x, a.y - b.y) / g.d0, 0.3, 600);
     requestDraw(); return;
   }
+  if (g.lpDone) return;
   const dx = p.x - g.x0;
   if (Math.abs(dx) > 6 || Math.abs(p.y - g.y0) > 6) { if (!g.moved && g.lp && !g.fine) clearTimeout(g.lp); g.moved = true; }
   g.lastX = p.x;
@@ -758,8 +979,9 @@ function endPointer(e) {
   if (!g) return;
   if (g.type === 'pinch') { if (ptrs.size === 0) { g = null; save(); } return; }
   clearTimeout(g.lp);
-  $('loupe').classList.add('hidden');
+  if (!g.lpDone) $('loupe').classList.add('hidden');
   viewLock = null;
+  if (g.lpDone) { g = null; requestDraw(); return; }
   if (!g.moved && !g.fine) {
     if (g.type === 'head' && g.track) offsetDialog(g.track);
     else if (g.type === 'sel' || g.type === 'handle') { S.curSel = g.s; S.activeTrack = g.track.id; }
@@ -768,6 +990,8 @@ function endPointer(e) {
       // Tippen auf einen Clip: Playhead dorthin
       const r = rOfX(g.x0); const c = clipAt(g.track.id, r);
       if (c) S.T = r;
+      if (S.curSel && S.curSel.kind === 'range' && S.curSel.track !== g.track.id) S.curSel = null; // Notizziel nicht auf fremder Spur lassen
+      log('spur', { track: g.track.id, clip: c && c.id });
     }
     showFrame(true); renderSide();
   } else if (g.type === 'handle') { changed(); }
@@ -775,7 +999,11 @@ function endPointer(e) {
   g = null; requestDraw();
 }
 cv.addEventListener('pointerup', endPointer);
-cv.addEventListener('pointercancel', endPointer);
+cv.addEventListener('pointercancel', (e) => {
+  ptrs.delete(e.pointerId);
+  if (g) { clearTimeout(g.lp); log('geste-abgebrochen', { typ: g.type }); }
+  viewLock = null; $('loupe').classList.add('hidden'); g = null; requestDraw();
+});
 cv.addEventListener('wheel', (e) => {
   e.preventDefault(); stopPlay();
   if (e.ctrlKey || e.metaKey) { S.pps = clamp(S.pps * Math.exp(-e.deltaY / 300), 0.3, 600); }
@@ -794,7 +1022,7 @@ function offsetDialog(track) {
       <div class="row"><button data-v="reset">Zurücksetzen</button><button id="mOk" class="primary">Fertig</button></div>`, (b) => {
       b.querySelectorAll('button[data-v]').forEach((x) => x.onclick = () => {
         S.state.offsets[track.id] = x.dataset.v === 'reset' ? 0 : Math.round(((S.state.offsets[track.id] || 0) + +x.dataset.v) * 100) / 100;
-        applyOffsets(); showFrame(true); requestDraw(); save(); show();
+        applyOffsets(); showFrame(true); changed(); show();
       });
       b.querySelector('#mOk').onclick = closeModal;
     });
@@ -805,17 +1033,20 @@ function offsetDialog(track) {
 /* ---------- Export / Laden ---------- */
 const blobToB64 = (b) => new Promise((res) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.readAsDataURL(b); });
 async function buildExport() {
+  const snapSel = JSON.parse(JSON.stringify(sels())), snapOff = JSON.parse(JSON.stringify(S.state.offsets));
+  let missingAudio = 0;
   const out = {
     format: 'bt-sichtung-auswahl', version: 1,
     project: S.proj.meta.name, projectCreated: S.proj.meta.created,
     exported: new Date().toISOString(), device: navigator.userAgent,
-    offsets: S.state.offsets, tracks: S.proj.meta.tracks, selections: [],
+    offsets: snapOff, tracks: S.proj.meta.tracks, selections: [],
   };
-  for (const s of [...sels()].sort((a, b) => selRange(a)[0] - selRange(b)[0])) {
+  for (const s of snapSel.sort((a, b) => selRange(a)[0] - selRange(b)[0])) {
     const notes = [];
     for (const n of s.notes) {
       const b = await DB.get('notes', n.id);
       if (b) notes.push({ id: n.id, mime: n.mime, dur: n.dur, created: new Date(n.created).toISOString(), data: await blobToB64(b) });
+      else missingAudio++;
     }
     const base = { id: s.id, kind: s.kind, stars: s.stars, text: s.text, created: new Date(s.created).toISOString(), notes };
     if (s.kind === 'marker') { out.selections.push({ ...base, clock: clock(s.t), t: s.t }); continue; }
@@ -823,10 +1054,11 @@ async function buildExport() {
     out.selections.push({
       ...base, track: s.track, clip: c.id, name: c.name, original: c.original, fps: c.fps,
       in: +s.inT.toFixed(4), out: +s.outT.toFixed(4),
-      inFrame: Math.round(s.inT * c.fps), outFrame: Math.round(s.outT * c.fps),
+      inFrame: Math.round(s.inT * c.fps), outFrame: Math.round(s.outT * c.fps), open: !!s.open,
       clockIn: clock(c.s + s.inT, c.fps), clockOut: clock(c.s + s.outT, c.fps),
     });
   }
+  if (missingAudio) { log('export-audio-fehlt', { n: missingAudio }); toast(`${missingAudio} Sprachnotiz(en) ohne Audio – steht im Log`, 3500); }
   return out;
 }
 /* Speichern = Datei mit dem ganzen Arbeitsstand (Auswahl, Marker, Notizen, Versatz, Position).
@@ -841,8 +1073,20 @@ function markSaved(saved) {
 }
 async function saveFile() {
   stopPlay();
+  const rev = S.rev;
+  log('speichern-start', { eintraege: sels().length });
   const data = await buildExport();
   data.view = { T: S.T, activeTrack: S.activeTrack, pps: S.pps };
+  data.app = APP_VERSION; data.log = LOG.slice(-1500).map(logLine);
+  const dir = await projectDir(true);
+  if (dir) {
+    try {
+      await writeStand(dir, data);
+      if (S.rev === rev) markSaved(true);
+      log('speichern-ordner', { datei: standName() });
+      toast(`Gespeichert: ${dir.name}/${standName()}`, 2500); return;
+    } catch (e) { log('speichern-ordner-fehler', { msg: e.message }); }
+  }
   const name = saveName();
   const file = new File([JSON.stringify(data, null, 1)], name, { type: 'application/json' });
   const nR = data.selections.filter((s) => s.kind === 'range').length;
@@ -851,7 +1095,8 @@ async function saveFile() {
   const download = () => {
     const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = name; a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-    markSaved(true);
+    if (S.rev === rev) markSaved(true);
+    log('speichern-datei', { name, aktuell: S.rev === rev });
   };
   const touch = matchMedia('(pointer: coarse)').matches;
   const canShare = navigator.canShare && navigator.canShare({ files: [file] });
@@ -863,12 +1108,12 @@ async function saveFile() {
     b.querySelector('#mClose').onclick = closeModal;
     b.querySelector('#mDl').onclick = () => { download(); closeModal(); };
     b.querySelector('#mShare').onclick = () => navigator.share({ files: [file], title: name })
-      .then(() => { markSaved(true); closeModal(); toast('Gespeichert'); }).catch(() => {});
+      .then(() => { if (S.rev === rev) markSaved(true); log('speichern-geteilt', { name }); closeModal(); toast('An „Teilen“ übergeben'); }).catch((e) => log('teilen-abgebrochen', { name: e.name }));
   });
 }
 async function readSaveFile(f) {
   let d; try { d = JSON.parse(await f.text()); } catch { toast('Datei nicht lesbar'); return null; }
-  if (d.format !== 'bt-sichtung-auswahl') { toast('Keine Speicherdatei der Sichtungs-App'); return null; }
+  if (d.format !== 'bt-sichtung-auswahl') { toast('Keine Burning-Balls-Speicherdatei'); return null; }
   return d;
 }
 async function openSaveFile(f) {
@@ -890,7 +1135,8 @@ async function openSaveFileFromHome(f) {
   await loadSelection(d);
 }
 async function loadSelection(d) {
-  for (const s of sels()) for (const n of s.notes) await DB.del('notes', n.id);
+  // Audio bisheriger Notizen bleibt erhalten (Undo kann darauf zurückgreifen); erst alles vorbereiten, dann übernehmen
+  if (!Array.isArray(d.selections)) { toast('Speicherdatei unvollständig'); return; }
   const list = []; let skipped = 0;
   for (const x of d.selections) {
     const notes = [];
@@ -901,7 +1147,7 @@ async function loadSelection(d) {
     }
     const base = { id: x.id, kind: x.kind, stars: x.stars || 0, text: x.text || '', notes, created: Date.parse(x.created) };
     if (x.kind === 'marker') list.push({ ...base, t: x.t });
-    else if (S.byId.has(x.clip)) list.push({ ...base, clipId: x.clip, track: x.track, inT: x.in, outT: x.out, open: false });
+    else if (S.byId.has(x.clip)) list.push({ ...base, clipId: x.clip, track: x.track, inT: x.in, outT: x.out, open: !!x.open });
     else skipped++;
   }
   S.state.selections = list; S.state.offsets = d.offsets || {};
@@ -922,9 +1168,15 @@ function help() {
     <li><b>⚑ Marker</b> = Notiz zu einer Stelle ohne Clip-Auswahl (z. B. „ab hier Essen“).</li>
     <li><b>Spurname antippen</b> = Spur verschieben, falls die Kamera-Uhr falsch ging.</li>
     <li>Lücken ohne Aufnahme sind auf 2 s gekürzt (gestrichelt, mit echter Dauer).</li>
-    <li>Am PC: Leertaste = Play, ←/→ = ±1 Bild, Shift+←/→ = ±1 s, M = Marker.</li>
+    <li><b>Lange auf die Timeline oder aufs Video drücken</b> = IN am Abspielzeiger, nochmal lange drücken = OUT. Beliebig viele Stellen pro Clip; alles außerhalb wird ausgegraut. Lange auf einen gelben Rand drücken = Lupe zum Feinjustieren.</li>
+    <li>Die Zeile <b>„🎙 Notiz zu …“</b> zeigt immer, wohin die nächste Sprachnotiz geht. Eintrag in der Shortlist oder auf der Timeline antippen = auswählen.</li>
+    <li><b>↶</b> oben rechts = Rückgängig (auch Löschen), <b>↷</b> = Wiederholen.</li>
+    <li><b>⛶ Vollbild</b>: Video bildschirmfüllend, Timeline durchsichtig darüber. <b>•••</b> klappt die Knöpfe aus. Aufs Video tippen = Play/Pause.</li>
+    <li>Am PC: Leertaste = Play, ←/→ = ±1 Bild, Shift+←/→ = ±1 s, M = Marker, F = Vollbild, Strg+Z = Rückgängig.</li>
     <li>Alles wird automatisch auf diesem Gerät gespeichert. <b>Speichern</b> erstellt eine Datei mit deinem Stand; mit <b>Öffnen</b> machst du damit weiter – auch auf einem anderen Gerät, ohne Internet. Die Datei bekommt auch Claude.</li>
-  </ul><div class="row"><button class="primary" onclick="closeModal()">OK</button></div>`);
+  </ul><p class="hint">Burning Balls ${APP_VERSION}</p>
+  <div class="row"><button id="mLog">Log ansehen</button><span class="grow"></span><button class="primary" onclick="closeModal()">OK</button></div>`,
+  (b) => { b.querySelector('#mLog').onclick = showLog; });
 }
 
 /* ---------- Bedienung ---------- */
@@ -935,9 +1187,64 @@ const ACT = {
   prevClip: () => { stopPlay(); const c = prevClipStart(S.T); if (c) { S.T = c.s; showFrame(true); requestDraw(); save(); } },
   nextClip: () => { stopPlay(); const c = nextClipStart(S.T); if (c) { S.T = c.s; showFrame(true); requestDraw(); save(); } },
   in: markIn, out: markOut, marker: addMarker, rec: toggleRec,
-  mute: () => { S.muted = !S.muted; video.muted = S.muted; $('btnMute').textContent = S.muted ? '🔇' : '🔊'; },
+  mute: () => { S.muted = !S.muted; video.muted = S.muted; updateMute(); },
+  undo, redo,
+  fs: () => toggleFS(),
+  more: () => document.body.classList.toggle('fs-open'),
 };
-document.querySelectorAll('.transport button[data-act]').forEach((b) => b.addEventListener('click', () => ACT[b.dataset.act]()));
+function updateMute() { document.querySelectorAll('[data-act=mute]').forEach((b) => { b.textContent = S.muted ? '🔇' : '🔊'; }); }
+document.querySelectorAll('button[data-act]').forEach((b) => b.addEventListener('click', () => { log('knopf', { act: b.dataset.act }); ACT[b.dataset.act](); }));
+// Aufs Video tippen = Play/Pause
+let vPress = null;
+$('videoWrap').addEventListener('pointerdown', (e) => {
+  if (e.target.closest('button')) return;
+  vPress = { x: e.clientX, y: e.clientY, long: false };
+  vPress.timer = setTimeout(() => { if (vPress) { vPress.long = true; log('knopf', { act: 'video-lang' }); markAtPlayhead(); } }, MARK_LONGPRESS_MS);
+});
+$('videoWrap').addEventListener('pointermove', (e) => { if (vPress && Math.hypot(e.clientX - vPress.x, e.clientY - vPress.y) > 10) { clearTimeout(vPress.timer); vPress = null; } });
+$('videoWrap').addEventListener('pointerup', () => {
+  if (!vPress) return; clearTimeout(vPress.timer);
+  if (!vPress.long) { log('knopf', { act: 'video-tap' }); ACT.play(); }
+  vPress = null;
+});
+$('videoWrap').addEventListener('pointercancel', () => { if (vPress) clearTimeout(vPress.timer); vPress = null; });
+$('videoWrap').addEventListener('contextmenu', (e) => e.preventDefault());
+
+/* ---------- Vollbild ---------- */
+function toggleFS(on = !S.fs) {
+  S.fs = on;
+  document.body.classList.toggle('fs', on);
+  if (!on) document.body.classList.remove('fs-open');
+  const el = document.documentElement;
+  try {
+    if (on && !document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(() => {});
+    else if (!on && document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  } catch { /* iPhone: kein Fullscreen-API – reicht als App ohnehin */ }
+  log('vollbild', { an: on });
+  setTimeout(resizeCanvas, 60); setTimeout(resizeCanvas, 400);
+}
+document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && S.fs) toggleFS(false); });
+
+/* ---------- Log ansehen ---------- */
+function showLog() {
+  const txt = LOG.slice(-400).map(logLine).join('\n');
+  modal(`<h2>Log</h2><p class="hint">${LOG.length} Einträge. Bei Problemen „Teilen“ und mir die Datei schicken – sie steckt auch in jeder Speicherdatei.</p>
+    <pre class="logbox">${esc(txt)}</pre>
+    <div class="row"><button id="lLive">${S.liveLog ? 'Live-Log aus' : 'Live-Log an'}</button><button id="lClr" class="ghost danger">Leeren</button>
+    <span class="grow"></span><button id="lShare" class="primary">Teilen / Sichern</button><button id="lOk">Schließen</button></div>`, (b) => {
+    const pre = b.querySelector('.logbox'); pre.scrollTop = pre.scrollHeight;
+    b.querySelector('#lOk').onclick = closeModal;
+    b.querySelector('#lClr').onclick = () => { LOG.length = 0; logDirty = true; log('log-geleert'); showLog(); };
+    b.querySelector('#lLive').onclick = () => { S.liveLog = !S.liveLog; $('liveLog').classList.toggle('hidden', !S.liveLog); renderLiveLog(); closeModal(); };
+    b.querySelector('#lShare').onclick = () => {
+      const d = new Date();
+      const name = `burningballs_log_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.txt`;
+      const file = new File([`Burning Balls ${APP_VERSION}\n${navigator.userAgent}\n\n` + LOG.map(logLine).join('\n')], name, { type: 'text/plain' });
+      if (matchMedia('(pointer: coarse)').matches && navigator.canShare && navigator.canShare({ files: [file] })) navigator.share({ files: [file], title: name }).catch(() => {});
+      else { const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = name; a.click(); }
+    };
+  });
+}
 document.addEventListener('keydown', (e) => {
   if ($('editor').classList.contains('hidden') || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
   const k = e.key.toLowerCase();
@@ -945,6 +1252,10 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'arrowleft') e.shiftKey ? ACT.back1s() : ACT.backF();
   else if (k === 'arrowright') e.shiftKey ? ACT.fwd1s() : ACT.fwdF();
   else if (k === 's' && (e.ctrlKey || e.metaKey)) saveFile();
+  else if (k === 'z' && (e.ctrlKey || e.metaKey)) (e.shiftKey ? redo() : undo());
+  else if (k === 'y' && (e.ctrlKey || e.metaKey)) redo();
+  else if (k === 'f') toggleFS();
+  else if (k === 'escape' && S.fs) toggleFS(false);
   else if (k === 'i') ACT.in(); else if (k === 'o') ACT.out(); else if (k === 'm') ACT.marker(); else if (k === 'n') ACT.rec();
   else if (k === 'arrowup') { const i = S.tracks.findIndex((t) => t.id === S.activeTrack); S.activeTrack = S.tracks[Math.max(0, i - 1)].id; showFrame(true); requestDraw(); }
   else if (k === 'arrowdown') { const i = S.tracks.findIndex((t) => t.id === S.activeTrack); S.activeTrack = S.tracks[Math.min(S.tracks.length - 1, i + 1)].id; showFrame(true); requestDraw(); }
@@ -957,14 +1268,60 @@ $('openInput').onchange = (e) => { if (e.target.files[0]) openSaveFile(e.target.
 $('homeOpenInput').onchange = (e) => { if (e.target.files[0]) openSaveFileFromHome(e.target.files[0]); e.target.value = ''; };
 $('btnHelp').onclick = help; $('btnHelp2').onclick = help;
 $('importInput').onchange = (e) => { if (e.target.files.length) importFiles(e.target.files); e.target.value = ''; };
+
+/* ---------- PC (Chrome/Edge): Projektordner direkt öffnen, Stand-Datei liegt im Ordner ----------
+ * iPad-Safari kann nicht in Ordner schreiben → dort bleibt Speichern über „Teilen“. */
+const canDir = 'showDirectoryPicker' in window;
+if (canDir) $('btnDir').classList.remove('hidden');
+$('btnDir').onclick = async () => {
+  let dir;
+  try { dir = await window.showDirectoryPicker({ id: 'bb-projekt', mode: 'readwrite' }); } catch { return; }
+  const files = [];
+  for await (const [name, h] of dir.entries()) if (h.kind === 'file' && /\.(json|mp4|jpg)$/i.test(name) && !/_Stand\.json$/i.test(name)) files.push(await h.getFile());
+  log('ordner-import', { ordner: dir.name, dateien: files.length });
+  importFiles(files, dir);
+};
+const standName = () => S.proj.meta.name.replace(/[^\w-]+/g, '_') + '_Stand.json';
+async function projectDir(ask) {
+  if (!canDir || !S.proj) return null;
+  const dir = await DB.get('state', '__dir__' + S.proj.id).catch(() => null);
+  if (!dir) return null;
+  let perm = await dir.queryPermission({ mode: 'readwrite' });
+  if (perm === 'prompt' && ask) perm = await dir.requestPermission({ mode: 'readwrite' }).catch(() => 'denied');
+  return perm === 'granted' ? dir : null;
+}
+async function writeStand(dir, data) {
+  const fh = await dir.getFileHandle(standName(), { create: true });
+  const w = await fh.createWritable(); await w.write(JSON.stringify(data, null, 1)); await w.close();
+}
+// Beim Öffnen: Stand-Datei im Ordner anlegen (falls noch keine) bzw. Hinweis, dass es eine gibt
+async function ensureStandFile() {
+  const dir = await projectDir(true); if (!dir) return;
+  try {
+    await dir.getFileHandle(standName());
+    log('stand-datei-vorhanden', { datei: standName() });
+    if (!sels().length) toast(`Im Ordner liegt ${standName()} – mit „Öffnen“ laden`, 4000);
+  } catch {
+    const data = await buildExport(); data.view = { T: S.T, activeTrack: S.activeTrack, pps: S.pps }; data.app = APP_VERSION;
+    await writeStand(dir, data); log('stand-datei-angelegt', { datei: standName() });
+    toast(`Speicherdatei ${standName()} im Projektordner angelegt`, 3500);
+  }
+}
 $('modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
-document.addEventListener('visibilitychange', () => { if (document.hidden) { stopPlay(); save(); } });
+document.addEventListener('visibilitychange', () => {
+  log(document.hidden ? 'app-hintergrund' : 'app-vordergrund', vstate());
+  if (document.hidden) { stopPlay(); save(true); flushLog(); }
+});
 
 /* ---------- Start ---------- */
 (async () => {
   await DB.open();
+  const oldLog = await DB.get('state', '__log__').catch(() => null);
+  if (oldLog && oldLog.length) LOG.unshift(...oldLog.slice(-LOG_MAX + 50));
+  log('app-start', { v: APP_VERSION, ua: navigator.userAgent.slice(0, 120), standalone: !!navigator.standalone || matchMedia('(display-mode: standalone)').matches });
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
   await showHome();
+  { const hi = new Image(); hi.onload = () => $('hero').classList.add('has-img'); hi.src = 'hero.jpg'; }
   // ?import=<Pfad>/ lädt einen Projektordner vom selben Server (Testserver am PC, ohne Dateiauswahl)
   const imp = new URLSearchParams(location.search).get('import');
   if (imp) {

@@ -1,7 +1,7 @@
 // App-Hülle offline verfügbar machen. Footage liegt in IndexedDB, nicht im Cache.
 // Bei jeder App-Änderung VERSION hochzählen, damit Geräte die neue Fassung laden.
-const VERSION = 'bt-sichtung-v2';
-const FILES = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
+const VERSION = 'burningballs-v3c';
+const FILES = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'hero.jpg'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));

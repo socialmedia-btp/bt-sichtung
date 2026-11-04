@@ -6,9 +6,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="BT Sichtung">
-<meta name="theme-color" content="#111214">
-<title>BT Sichtung</title>
+<meta name="apple-mobile-web-app-title" content="Burning Balls">
+<meta name="theme-color" content="#0b0b0d">
+<title>Burning Balls</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="icon" href="icon-192.png">
@@ -19,22 +19,32 @@
 <!-- Projektliste -->
 <section id="home" class="screen">
   <header class="bar">
-    <h1>BT Sichtung</h1>
+    <h1>Burning Balls</h1>
     <span class="grow"></span>
     <button id="btnHelp2" class="ghost">Hilfe</button>
   </header>
   <div class="home-body">
+    <div class="hero" id="hero">
+      <div class="hero-txt">
+        <div class="hero-kicker">Blue Tacit · Footage-Auswahl</div>
+        <div class="hero-title">Burning Balls</div>
+        <div class="hero-sub">Couch, iPad, In &amp; Out. Den Rest schneidet Claude.</div>
+      </div>
+    </div>
     <div id="projList" class="proj-list"></div>
-    <label class="import-btn">
-      <input id="importInput" type="file" multiple accept=".json,.mp4,.jpg,application/json,video/mp4,image/jpeg">
-      <span>＋ Projekt importieren</span>
-    </label>
-    <p class="hint">Im Projektordner <b>alle Dateien</b> auswählen (projekt.json, Videos, Filmstreifen). Ein Projekt erneut importieren ergänzt fehlende Dateien, deine Auswahl bleibt erhalten.</p>
-    <label class="import-btn">
-      <input id="homeOpenInput" type="file" accept=".json,application/json">
-      <span>Speicherdatei öffnen</span>
-    </label>
-    <p class="hint">Öffnet das passende Projekt mit dem gespeicherten Stand (Auswahl, Marker, Notizen). Das Projekt muss auf diesem Gerät importiert sein.</p>
+    <div class="home-actions">
+      <label class="import-btn">
+        <input id="importInput" type="file" multiple accept=".json,.mp4,.jpg,application/json,video/mp4,image/jpeg">
+        <span>＋ Projekt importieren</span>
+      </label>
+      <button id="btnDir" class="import-btn hidden">📁 Projektordner öffnen (PC)</button>
+      <label class="import-btn">
+        <input id="homeOpenInput" type="file" accept=".json,application/json">
+        <span>Speicherdatei öffnen</span>
+      </label>
+    </div>
+    <p class="hint">Projekt importieren: im Projektordner <b>alle Dateien</b> auswählen (projekt.json, Videos, Filmstreifen). Erneut importieren ergänzt fehlende Dateien, deine Auswahl bleibt.
+      Speicherdatei öffnen: öffnet das passende Projekt mit dem gespeicherten Stand.</p>
     <p id="storageInfo" class="hint"></p>
   </div>
 </section>
@@ -45,18 +55,22 @@
     <button id="btnBack" class="ghost">‹ Projekte</button>
     <h1 id="projTitle"></h1>
     <span class="grow"></span>
+    <button data-act="fs" class="ghost" title="Vollbild (F)">⛶</button>
     <button id="btnHelp" class="ghost">Hilfe</button>
     <label class="btn" title="Speicherdatei öffnen und dort weitermachen">
       <input id="openInput" type="file" accept=".json,application/json">Öffnen</label>
     <button id="btnSave" class="primary" title="Speicherdatei erstellen (Strg+S)">Speichern</button>
+    <button data-act="undo" class="icon" title="Rückgängig (Strg+Z)">↶</button>
+    <button data-act="redo" class="icon" title="Wiederholen">↷</button>
   </header>
 
   <div class="main">
     <div class="viewer">
-      <div class="video-wrap">
+      <div class="video-wrap" id="videoWrap">
         <video id="video" playsinline webkit-playsinline preload="auto"></video>
         <div id="noClip" class="no-clip">Keine Aufnahme an dieser Stelle</div>
         <div id="hud" class="hud"></div>
+        <pre id="liveLog" class="live-log hidden"></pre>
       </div>
       <div class="transport">
         <button data-act="prevClip" title="Vorheriger Clip">⏮</button>
@@ -70,19 +84,31 @@
         <button data-act="in" class="mark" title="In-Punkt (I)">IN</button>
         <button data-act="out" class="mark" title="Out-Punkt (O)">OUT</button>
         <button data-act="marker" title="Marker an dieser Stelle (M)">⚑</button>
-        <button data-act="rec" id="btnRec" class="rec" title="Sprachnotiz (N)">🎙</button>
-        <button data-act="mute" id="btnMute" title="Ton an/aus">🔊</button>
+        <button data-act="rec" class="rec" title="Sprachnotiz (N)">🎙</button>
+        <button data-act="mute" title="Ton an/aus">🔊</button>
       </div>
-      <div id="tc" class="tc"></div>
+      <div class="tc"><span id="tc"></span><span id="noteTarget" class="note-target"></span></div>
     </div>
 
     <aside class="side">
       <div id="current" class="current"></div>
       <div class="list-head">
-        <span>Auswahl</span><span id="selCount" class="muted"></span>
+        <span>Shortlist</span><span id="selCount" class="muted"></span>
       </div>
       <div id="selList" class="sel-list"></div>
     </aside>
+  </div>
+
+  <!-- Vollbild: schwebende Knöpfe -->
+  <div class="fs-top">
+    <button data-act="fs" class="glass" title="Vollbild beenden">⤡</button>
+    <span class="grow"></span>
+    <button data-act="undo" class="glass" title="Rückgängig">↶</button>
+  </div>
+  <div class="fs-mini">
+    <button data-act="play" class="glass">▶</button>
+    <button data-act="rec" class="glass rec">🎙</button>
+    <button data-act="more" class="glass" title="Alle Knöpfe ein-/ausklappen">•••</button>
   </div>
 
   <div class="tl-wrap">
