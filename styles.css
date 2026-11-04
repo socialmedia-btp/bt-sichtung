@@ -53,6 +53,7 @@ input[type=text], textarea { font: inherit; color: var(--text); background: var(
   background-size: cover; background-position: center; display: flex; align-items: flex-end; }
 .hero.has-img { background-image: linear-gradient(180deg, transparent 35%, rgba(0,0,0,.78)), url("hero.jpg"); }
 .hero-txt { padding: 20px 22px; }
+.hero-logo { display: block; width: min(220px, 45vw); height: auto; margin-bottom: 14px; filter: drop-shadow(0 2px 6px #000a); }
 .hero-kicker { font-size: 12px; text-transform: uppercase; letter-spacing: .12em; color: #ffd28a; font-weight: 600; }
 .hero-title { font-size: 34px; font-weight: 800; letter-spacing: -0.03em; line-height: 1.05; margin: 4px 0; }
 .hero-sub { color: #d6d6da; font-size: 15px; }
