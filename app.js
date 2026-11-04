@@ -123,7 +123,7 @@ async function importFiles(fileList) {
   if (!pj) { toast('projekt.json fehlt in der Auswahl'); return; }
   let meta;
   try { meta = JSON.parse(await pj.text()); } catch { toast('projekt.json ist nicht lesbar'); return; }
-  if (meta.format === 'bt-sichtung-auswahl') { toast('Das ist ein Auswahl-Export – im Projekt über „Auswahl exportieren → Laden“ einlesen'); return; }
+  if (meta.format === 'bt-sichtung-auswahl') { openSaveFileFromHome(pj); return; }
   if (meta.format !== 'bt-sichtung') { toast('Keine BT-Sichtung-Projektdatei'); return; }
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
 
@@ -395,7 +395,7 @@ async function deleteSel(s) {
   if (S.curSel === s) S.curSel = null;
   changed();
 }
-function changed() { save(); renderSide(); requestDraw(); }
+function changed() { save(); renderSide(); requestDraw(); markSaved(false); }
 function nudge(s, which, frames) {
   const c = S.byId.get(s.clipId);
   if (which === 'in') s.inT = clamp(snap(s.inT + frames / c.fps, c), 0, s.outT - 1 / c.fps);
@@ -829,40 +829,69 @@ async function buildExport() {
   }
   return out;
 }
-async function exportDialog() {
+/* Speichern = Datei mit dem ganzen Arbeitsstand (Auswahl, Marker, Notizen, Versatz, Position).
+ * Öffnen lädt sie wieder – auf jedem Gerät, auf dem das Projekt importiert ist, auch ohne Internet. */
+function saveName() {
+  const d = new Date();
+  return `${S.proj.meta.name.replace(/[^\w-]+/g, '_')}_Stand_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.json`;
+}
+function markSaved(saved) {
+  S.dirty = !saved;
+  $('btnSave').textContent = saved ? 'Speichern' : 'Speichern •';
+}
+async function saveFile() {
   stopPlay();
   const data = await buildExport();
-  const d = new Date();
-  const name = `auswahl_${S.proj.meta.name.replace(/[^\w-]+/g, '_')}_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.json`;
+  data.view = { T: S.T, activeTrack: S.activeTrack, pps: S.pps };
+  const name = saveName();
   const file = new File([JSON.stringify(data, null, 1)], name, { type: 'application/json' });
   const nR = data.selections.filter((s) => s.kind === 'range').length;
   const nN = data.selections.reduce((a, s) => a + s.notes.length, 0);
+  const summary = `${nR} Clips, ${data.selections.length - nR} Marker, ${nN} Sprachnotizen`;
+  const download = () => {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    markSaved(true);
+  };
+  const touch = matchMedia('(pointer: coarse)').matches;
   const canShare = navigator.canShare && navigator.canShare({ files: [file] });
-  modal(`<h2>Auswahl exportieren</h2>
-    <p>${nR} Clips, ${data.selections.length - nR} Marker, ${nN} Sprachnotizen.</p>
-    <p class="hint">Am iPad: „Teilen“ → „In Dateien sichern“ → in den OneDrive-Projektordner. Am PC: Herunterladen.</p>
-    <div class="row">
-      <label class="import-btn" style="padding:8px 12px;font-weight:400"><input id="loadSel" type="file" accept=".json,application/json">Auswahl laden…</label>
-      <span class="grow"></span>
-      <button id="mClose">Schließen</button>
-      ${canShare ? '<button id="mShare" class="primary">Teilen</button>' : ''}
-      <button id="mDl" class="${canShare ? '' : 'primary'}">Herunterladen</button>
-    </div>`, (b) => {
+  if (!touch || !canShare) { download(); toast(`Gespeichert: ${name} (${summary}) – im Download-Ordner`, 4000); return; }
+  // iPad: Teilen braucht einen frischen Fingertipp → kurzer Dialog
+  modal(`<h2>Speichern</h2><p>${summary}.</p>
+    <p class="hint">„Teilen“ → „In Dateien sichern“ → z. B. in den OneDrive-Projektordner. Mit „Öffnen“ machst du später genau hier weiter – auch auf einem anderen Gerät.</p>
+    <div class="row"><button id="mClose">Abbrechen</button><button id="mDl">Herunterladen</button><button id="mShare" class="primary">Teilen</button></div>`, (b) => {
     b.querySelector('#mClose').onclick = closeModal;
-    if (canShare) b.querySelector('#mShare').onclick = () => navigator.share({ files: [file], title: name }).catch(() => {});
-    b.querySelector('#mDl').onclick = () => {
-      const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = name; a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-    };
-    b.querySelector('#loadSel').onchange = (e) => e.target.files[0] && loadSelection(e.target.files[0]);
+    b.querySelector('#mDl').onclick = () => { download(); closeModal(); };
+    b.querySelector('#mShare').onclick = () => navigator.share({ files: [file], title: name })
+      .then(() => { markSaved(true); closeModal(); toast('Gespeichert'); }).catch(() => {});
   });
 }
-async function loadSelection(f) {
-  let d; try { d = JSON.parse(await f.text()); } catch { toast('Datei nicht lesbar'); return; }
-  if (d.format !== 'bt-sichtung-auswahl') { toast('Keine Auswahl-Datei'); return; }
-  if (d.project !== S.proj.meta.name) { toast(`Auswahl gehört zu „${d.project}“`); return; }
+async function readSaveFile(f) {
+  let d; try { d = JSON.parse(await f.text()); } catch { toast('Datei nicht lesbar'); return null; }
+  if (d.format !== 'bt-sichtung-auswahl') { toast('Keine Speicherdatei der Sichtungs-App'); return null; }
+  return d;
+}
+async function openSaveFile(f) {
+  const d = await readSaveFile(f); if (!d) return;
+  if (d.project !== S.proj.meta.name) { toast(`Die Datei gehört zum Projekt „${d.project}“`); return; }
+  const apply = () => loadSelection(d);
+  if (!sels().length || !S.dirty) return apply();
+  modal(`<h2>Stand öffnen?</h2><p>Deine aktuelle, nicht gespeicherte Auswahl wird durch den Stand aus der Datei ersetzt.</p>
+    <div class="row"><button id="mNo">Abbrechen</button><button id="mYes" class="primary">Öffnen</button></div>`, (b) => {
+    b.querySelector('#mNo').onclick = closeModal;
+    b.querySelector('#mYes').onclick = () => { closeModal(); apply(); };
+  });
+}
+async function openSaveFileFromHome(f) {
+  const d = await readSaveFile(f); if (!d) return;
+  const p = (await DB.all('projects')).find((x) => x.meta.name === d.project);
+  if (!p) { toast(`Projekt „${d.project}“ ist auf diesem Gerät noch nicht importiert – erst den Projektordner importieren`, 5000); return; }
+  await openProject(p.id);
+  await loadSelection(d);
+}
+async function loadSelection(d) {
   for (const s of sels()) for (const n of s.notes) await DB.del('notes', n.id);
-  const list = [];
+  const list = []; let skipped = 0;
   for (const x of d.selections) {
     const notes = [];
     for (const n of x.notes || []) {
@@ -873,10 +902,13 @@ async function loadSelection(f) {
     const base = { id: x.id, kind: x.kind, stars: x.stars || 0, text: x.text || '', notes, created: Date.parse(x.created) };
     if (x.kind === 'marker') list.push({ ...base, t: x.t });
     else if (S.byId.has(x.clip)) list.push({ ...base, clipId: x.clip, track: x.track, inT: x.in, outT: x.out, open: false });
+    else skipped++;
   }
   S.state.selections = list; S.state.offsets = d.offsets || {};
-  applyOffsets(); S.curSel = null; closeModal(); changed(); showFrame(true);
-  toast(`${list.length} Einträge geladen`);
+  applyOffsets(); S.curSel = null;
+  if (d.view) { S.T = d.view.T ?? S.T; S.activeTrack = d.view.activeTrack || S.activeTrack; S.pps = d.view.pps || S.pps; }
+  closeModal(); changed(); showFrame(true); markSaved(true);
+  toast(`Stand geöffnet: ${list.length} Einträge` + (skipped ? ` (${skipped} Clips fehlen im Projekt)` : ''), 3500);
 }
 
 /* ---------- Hilfe ---------- */
@@ -891,7 +923,7 @@ function help() {
     <li><b>Spurname antippen</b> = Spur verschieben, falls die Kamera-Uhr falsch ging.</li>
     <li>Lücken ohne Aufnahme sind auf 2 s gekürzt (gestrichelt, mit echter Dauer).</li>
     <li>Am PC: Leertaste = Play, ←/→ = ±1 Bild, Shift+←/→ = ±1 s, M = Marker.</li>
-    <li>Alles wird automatisch auf diesem Gerät gespeichert. <b>Auswahl exportieren</b> schickt sie an Claude.</li>
+    <li>Alles wird automatisch auf diesem Gerät gespeichert. <b>Speichern</b> erstellt eine Datei mit deinem Stand; mit <b>Öffnen</b> machst du damit weiter – auch auf einem anderen Gerät, ohne Internet. Die Datei bekommt auch Claude.</li>
   </ul><div class="row"><button class="primary" onclick="closeModal()">OK</button></div>`);
 }
 
@@ -912,6 +944,7 @@ document.addEventListener('keydown', (e) => {
   if (k === ' ') { e.preventDefault(); ACT.play(); }
   else if (k === 'arrowleft') e.shiftKey ? ACT.back1s() : ACT.backF();
   else if (k === 'arrowright') e.shiftKey ? ACT.fwd1s() : ACT.fwdF();
+  else if (k === 's' && (e.ctrlKey || e.metaKey)) saveFile();
   else if (k === 'i') ACT.in(); else if (k === 'o') ACT.out(); else if (k === 'm') ACT.marker(); else if (k === 'n') ACT.rec();
   else if (k === 'arrowup') { const i = S.tracks.findIndex((t) => t.id === S.activeTrack); S.activeTrack = S.tracks[Math.max(0, i - 1)].id; showFrame(true); requestDraw(); }
   else if (k === 'arrowdown') { const i = S.tracks.findIndex((t) => t.id === S.activeTrack); S.activeTrack = S.tracks[Math.min(S.tracks.length - 1, i + 1)].id; showFrame(true); requestDraw(); }
@@ -919,7 +952,9 @@ document.addEventListener('keydown', (e) => {
   e.preventDefault();
 });
 $('btnBack').onclick = showHome;
-$('btnExport').onclick = exportDialog;
+$('btnSave').onclick = saveFile;
+$('openInput').onchange = (e) => { if (e.target.files[0]) openSaveFile(e.target.files[0]); e.target.value = ''; };
+$('homeOpenInput').onchange = (e) => { if (e.target.files[0]) openSaveFileFromHome(e.target.files[0]); e.target.value = ''; };
 $('btnHelp').onclick = help; $('btnHelp2').onclick = help;
 $('importInput').onchange = (e) => { if (e.target.files.length) importFiles(e.target.files); e.target.value = ''; };
 $('modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });

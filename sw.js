@@ -1,6 +1,6 @@
 // App-Hülle offline verfügbar machen. Footage liegt in IndexedDB, nicht im Cache.
 // Bei jeder App-Änderung VERSION hochzählen, damit Geräte die neue Fassung laden.
-const VERSION = 'bt-sichtung-v1';
+const VERSION = 'bt-sichtung-v2';
 const FILES = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', (e) => {

@@ -30,6 +30,11 @@
       <span>＋ Projekt importieren</span>
     </label>
     <p class="hint">Im Projektordner <b>alle Dateien</b> auswählen (projekt.json, Videos, Filmstreifen). Ein Projekt erneut importieren ergänzt fehlende Dateien, deine Auswahl bleibt erhalten.</p>
+    <label class="import-btn">
+      <input id="homeOpenInput" type="file" accept=".json,application/json">
+      <span>Speicherdatei öffnen</span>
+    </label>
+    <p class="hint">Öffnet das passende Projekt mit dem gespeicherten Stand (Auswahl, Marker, Notizen). Das Projekt muss auf diesem Gerät importiert sein.</p>
     <p id="storageInfo" class="hint"></p>
   </div>
 </section>
@@ -41,7 +46,9 @@
     <h1 id="projTitle"></h1>
     <span class="grow"></span>
     <button id="btnHelp" class="ghost">Hilfe</button>
-    <button id="btnExport" class="primary">Auswahl exportieren</button>
+    <label class="btn" title="Speicherdatei öffnen und dort weitermachen">
+      <input id="openInput" type="file" accept=".json,application/json">Öffnen</label>
+    <button id="btnSave" class="primary" title="Speicherdatei erstellen (Strg+S)">Speichern</button>
   </header>
 
   <div class="main">
