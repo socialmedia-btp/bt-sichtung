@@ -38,7 +38,7 @@
   <div class="row">
     <select id="proj"><option value="">Projekt wählen …</option></select>
     <label class="btn">Version (MP4 + JSON) wählen<input id="files" type="file" multiple accept=".mp4,.json,video/mp4,application/json"></label>
-    <label class="btn" id="proxBtn" style="display:none">Proxies wählen (Projektordner)<input id="proxFiles" type="file" multiple accept=".mp4,.json,video/mp4,application/json"></label>
+    <label class="btn" id="proxBtn" style="display:none">Proxies aus Ordner wählen<input id="proxFiles" type="file" multiple accept=".mp4,.json,video/mp4,application/json"></label>
     <span id="info" style="color:var(--dim)"></span>
   </div>
   <div id="stage"><video id="A" playsinline preload="auto"></video><video id="B" playsinline muted preload="auto"></video>
@@ -72,7 +72,8 @@ function idb(store, mode, fn) { return new Promise((res, rej) => { const t = db.
   const projs = db.objectStoreNames.contains('projects') ? (await idb('projects', 'readonly', (o) => o.getAll())).filter((p) => p.meta.kind !== 'version') : [];
   for (const p of projs) $('proj').add(new Option(`${p.meta.name} (${p.meta.clips.length} Clips)`, p.id));
   if (projs.length === 1) $('proj').value = projs[0].id;
-  if (!projs.length) { $('proj').style.display = 'none'; $('proxBtn').style.display = '';
+  $('proxBtn').style.display = '';   // auch mit Projekt: andere Proxies (z. B. Testordner) wählbar, haben Vorrang
+  if (!projs.length) { $('proj').style.display = 'none';
     $('info').textContent = 'In diesem Browser liegt kein Projekt → Proxies aus dem OneDrive-Projektordner wählen (alle Dateien) oder Seite aus der App öffnen.'; }
 })();
 // Quelle der Proxies: App-Speicher (Projekt) oder direkt gewählte Dateien
