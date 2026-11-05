@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Burning Balls – Sync-Test</title>
+<style>
+  :root { --bg: #0d0f12; --fg: #e8eaee; --dim: #8a909a; --y: #ffd23f; --r: #ff5a5a; --g: #3dd68c; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.4 -apple-system, system-ui, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 0 0 4px; } p { color: var(--dim); margin: 4px 0 12px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+  button, select, label.btn { background: #1f242c; color: var(--fg); border: 1px solid #333a44; border-radius: 10px;
+    min-height: 44px; padding: 0 16px; font: inherit; cursor: pointer; display: inline-flex; align-items: center; }
+  button.primary { background: var(--y); color: #111; border-color: var(--y); font-weight: 600; }
+  button:disabled { opacity: .4; }
+  input[type=file] { display: none; }
+  #stage { position: relative; width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 12px; overflow: hidden; }
+  #stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  #B { opacity: 0; } #B.on { opacity: 1; } #stage.diff #B.on { mix-blend-mode: difference; }
+  #badge { position: absolute; left: 12px; top: 12px; background: rgba(0,0,0,.6); padding: 4px 10px; border-radius: 8px;
+    font-size: 13px; display: none; } #badge.on { display: block; color: var(--y); }
+  #live { position: absolute; right: 12px; top: 12px; background: rgba(0,0,0,.6); padding: 4px 10px; border-radius: 8px;
+    font: 13px ui-monospace, monospace; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 14px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #222831; }
+  td.ok { color: var(--g); } td.bad { color: var(--r); }
+  #verdict { font-size: 18px; font-weight: 600; margin: 12px 0; }
+  pre { background: #14181e; padding: 10px; border-radius: 8px; max-height: 200px; overflow: auto; font-size: 12px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Sync-Test: Proxy-Bild + Versions-Ton</h1>
+  <p>Vorversuch Stufe 1. Die Version läuft mit Ton, in Test-Shots wird das Bild auf den Proxy aus dem Projekt umgeschaltet
+     (gleicher Inhalt, nur ungegradet). Ziel: höchstens 1 Bild Versatz. Ton läuft immer aus der Version.</p>
+  <div class="row">
+    <select id="proj"><option value="">Projekt wählen …</option></select>
+    <label class="btn">Version (MP4 + JSON) wählen<input id="files" type="file" multiple accept=".mp4,.json,video/mp4,application/json"></label>
+    <span id="info" style="color:var(--dim)"></span>
+  </div>
+  <div id="stage"><video id="A" playsinline preload="auto"></video><video id="B" playsinline muted preload="auto"></video>
+    <div id="badge">Proxy · ungegradet</div><div id="live">–</div></div>
+  <div class="row">
+    <button id="play" disabled>▶ Abspielen</button>
+    <button id="back" disabled>−5 s</button><button id="fwd" disabled>+5 s</button>
+    <button id="nextShot" disabled>Nächster Test-Shot</button>
+    <label class="btn"><input id="diff" type="checkbox" style="display:inline;margin-right:6px">Differenz zeigen</label>
+    <button id="auto" class="primary" disabled>Automatischer Test</button>
+    <button id="copy" disabled>Ergebnis kopieren</button>
+  </div>
+  <div id="verdict"></div>
+  <table id="tbl"><thead><tr><th>Shot</th><th>Clip</th><th>Bilder</th><th>Ø Versatz</th><th>max</th><th>≤ 1 Bild</th><th>bildgenau</th><th>Start</th><th>Nachsync</th></tr></thead><tbody></tbody></table>
+  <h3>Ereignisse</h3><pre id="ev"></pre>
+</main>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const A = $('A'), B = $('B');
+const EV = [], R = new Map();   // Ergebnisse je Shot-ID
+let ver = null, fps = 25, shots = [], tests = [], urls = new Map(), projId = null, files = new Map(), db = null;
+let aMeta = null, cur = null, bad = 0, autoRun = false, verFile = null;
+const fmt = (x, d = 2) => (x == null || isNaN(x) ? '–' : x.toFixed(d).replace('.', ','));
+function ev(t, d) { const s = `${(performance.now() / 1000).toFixed(2)} ${t}${d ? ' ' + JSON.stringify(d) : ''}`; EV.push(s); $('ev').textContent = EV.slice(-60).join('\n'); }
+
+// IndexedDB der App (gleiche Herkunft) – nur lesen
+function idb(store, mode, fn) { return new Promise((res, rej) => { const t = db.transaction(store, mode); const r = fn(t.objectStore(store)); t.oncomplete = () => res(r.result); t.onerror = () => rej(t.error); }); }
+(async () => {
+  db = await new Promise((res, rej) => { const r = indexedDB.open('bt-sichtung'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+  if (!db.objectStoreNames.contains('projects')) { $('info').textContent = 'Kein Burning-Balls-Projekt auf diesem Gerät.'; return; }
+  const projs = await idb('projects', 'readonly', (o) => o.getAll());
+  for (const p of projs.filter((p) => p.meta.kind !== 'version')) $('proj').add(new Option(`${p.meta.name} (${p.meta.clips.length} Clips)`, p.id));
+  if (projs.length === 1) { $('proj').value = projs[0].id; }
+})();
+
+$('files').onchange = (e) => { const fl = [...e.target.files]; e.target.value = ''; loadVersion(fl); };
+// PC-Testserver: ?version=projekt/Versionen/<Name> lädt <Name>.mp4 + .json ohne Dateiauswahl
+{ const q = new URLSearchParams(location.search).get('version');
+  if (q) setTimeout(async () => {
+    const get = async (ext) => new File([await (await fetch('../' + q + ext)).blob()], q.split('/').pop() + ext);
+    loadVersion([await get('.json'), await get('.mp4')]);
+  }, 500); }
+async function loadVersion(fl) {
+  const j = fl.find((f) => /\.json$/i.test(f.name)), m = fl.find((f) => /\.mp4$/i.test(f.name));
+  if (!j || !m) { $('info').textContent = 'Bitte MP4 und die gleichnamige JSON zusammen auswählen.'; return; }
+  ver = JSON.parse(await j.text()); verFile = m;
+  if (ver.format !== 'bt-version') { $('info').textContent = 'JSON ist kein Versions-Manifest.'; return; }
+  // Paar prüfen (Prüfsumme; Safari kann SHA-1 per SubtleCrypto)
+  const buf = await m.arrayBuffer();
+  const sha = [...new Uint8Array(await crypto.subtle.digest('SHA-1', buf))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  if (sha !== ver.export.sha1) { $('info').innerHTML = `<b style="color:var(--r)">Abgelehnt:</b> Video passt nicht zur JSON (Prüfsumme).`; ev('paar-falsch', { sha: sha.slice(0, 10) }); ver = null; return; }
+  fps = ver.fps; A.src = URL.createObjectURL(new Blob([buf], { type: 'video/mp4' }));
+  projId = $('proj').value;
+  if (!projId) { $('info').textContent = 'Bitte zuerst das Footage-Projekt wählen.'; return; }
+  const p = await idb('projects', 'readonly', (o) => o.get(projId));
+  const byId = new Map(p.meta.clips.map((c) => [c.id, c]));
+  shots = ver.shots.filter((s) => s.editierbar && byId.has(s.clip) && (s.v_out - s.v_in) >= fps * 1.2);
+  // bis zu 8 Test-Shots gleichmäßig über den Film
+  const step = Math.max(1, Math.floor(shots.length / 8)); tests = shots.filter((_, i) => i % step === 0).slice(0, 8);
+  for (const s of tests) { const c = byId.get(s.clip); const blob = await idb('files', 'readonly', (o) => o.get(projId + '/' + c.file));
+    if (blob) urls.set(s.clip, URL.createObjectURL(blob)); }
+  tests = tests.filter((s) => urls.has(s.clip));
+  $('info').textContent = `${ver.sequenz} · ${tests.length} Test-Shots (von ${shots.length} editierbaren im Projekt)`;
+  ev('geladen', { version: ver.version_id, tests: tests.map((s) => s.nr) });
+  for (const id of ['play', 'back', 'fwd', 'nextShot', 'auto', 'copy']) $(id).disabled = !tests.length;
+  render(); A.requestVideoFrameCallback(onA);
+}
+
+const vIn = (s) => s.v_in / fps, vOut = (s) => s.v_out / fps;
+const srcAt = (s, aT) => s.src_in / s.src_fps + (aT - vIn(s));
+const shotAt = (t) => tests.find((s) => t >= vIn(s) - 1e-3 && t < vOut(s) - 1e-3);
+const nextTest = (t) => tests.find((s) => vIn(s) > t);
+
+let lead = 0.06;      // gelernte Startverzögerung von B
+function onA(now, m) {
+  aMeta = { t: m.mediaTime, d: m.expectedDisplayTime };
+  const t = m.mediaTime, s = shotAt(t + 1 / fps), up = nextTest(t);
+  // vorladen: nächster Test-Shot innerhalb 1,5 s
+  const pre = s || (up && vIn(up) - t < 1.5 ? up : null);
+  if (pre && cur !== pre) {
+    cur = pre; bad = 0;
+    if (B.dataset.clip !== pre.clip) { B.src = urls.get(pre.clip); B.dataset.clip = pre.clip; }
+    B.pause(); B.currentTime = srcAt(pre, Math.max(t, vIn(pre)));
+    R.has(pre.id) || R.set(pre.id, { s: pre, n: 0, sum: 0, max: 0, ok: 0, exact: 0, start: null, resync: 0 });
+  }
+  if (cur && !A.paused && t >= vIn(cur) - lead && t < vOut(cur) && B.paused) {
+    B.currentTime = srcAt(cur, t + lead); B.play().catch((e) => ev('b-play-fehler', { e: String(e) }));
+  }
+  const on = !!(cur && t >= vIn(cur) - 0.5 / fps && t < vOut(cur) - 0.5 / fps);
+  B.classList.toggle('on', on); $('badge').classList.toggle('on', on);
+  if (cur && t >= vOut(cur) - 0.5 / fps) { B.pause(); B.playbackRate = 1; cur = null; render(); }
+  if (A.paused && !B.paused) B.pause();
+  A.requestVideoFrameCallback(onA);
+}
+function onB(now, m) {
+  if (cur && aMeta && !A.paused && B.classList.contains('on')) {
+    const aT = aMeta.t + (m.expectedDisplayTime - aMeta.d) / 1000 * A.playbackRate;
+    const off = (m.mediaTime - srcAt(cur, aT)) * fps;            // Versatz in Sequenzbildern (+ = Proxy voraus)
+    const r = R.get(cur.id);
+    if (r.start == null) { r.start = off; lead = Math.min(0.25, Math.max(0, lead - off / fps * 0.5)); }
+    r.n++; r.sum += off; r.max = Math.max(r.max, Math.abs(off)); if (Math.abs(off) <= 1.05) r.ok++; if (Math.abs(off) < 0.5) r.exact++;
+    $('live').textContent = `Shot ${cur.nr} · ${off >= 0 ? '+' : ''}${fmt(off)} Bild`;
+    // Feinregelung: gleitender Mittelwert ≥ 0,5 Bild → Proxy kurz 4 % schneller/langsamer (kein Sprung, kein Ruckeln)
+    r.win = (r.win || []).concat(off).slice(-8); const mean = r.win.reduce((x, y) => x + y, 0) / r.win.length;
+    const rate = r.win.length >= 6 && Math.abs(mean) >= 0.5 ? 1 - Math.sign(mean) * 0.04 : 1;
+    if (B.playbackRate !== rate) B.playbackRate = rate;
+    bad = Math.abs(off) > 1.5 ? bad + 1 : 0;
+    if (bad >= 3) { r.resync++; bad = 0; B.currentTime = srcAt(cur, aT + lead); ev('nachsync', { shot: cur.nr, off: +off.toFixed(2) }); }
+  }
+  B.requestVideoFrameCallback(onB);
+}
+B.requestVideoFrameCallback(onB);
+
+function render() {
+  const tb = $('tbl').tBodies[0]; tb.innerHTML = '';
+  let all = 0, ok = 0, ex = 0, worst = 0, rs = 0;
+  for (const s of tests) {
+    const r = R.get(s.id); const tr = tb.insertRow();
+    const pct = r && r.n ? 100 * r.ok / r.n : null;
+    if (r && r.n) { all += r.n; ok += r.ok; ex += r.exact; worst = Math.max(worst, r.max); rs += r.resync; }
+    tr.innerHTML = `<td>${s.nr}</td><td>${s.clip}</td><td>${r ? r.n : 0}</td><td>${r && r.n ? fmt(r.sum / r.n) : '–'}</td>
+      <td>${r && r.n ? fmt(r.max) : '–'}</td><td class="${pct == null ? '' : pct >= 95 ? 'ok' : 'bad'}">${pct == null ? '–' : fmt(pct, 0) + ' %'}</td><td>${r && r.n ? fmt(100 * r.exact / r.n, 0) + ' %' : '–'}</td>
+      <td>${r && r.start != null ? fmt(r.start) : '–'}</td><td>${r ? r.resync : 0}</td>`;
+  }
+  if (all) {
+    const p = 100 * ok / all;
+    $('verdict').innerHTML = p >= 95 && worst <= 2
+      ? `<span style="color:var(--g)">Bestanden:</span> ${fmt(p, 1)} % der Bilder ≤ 1 Bild Versatz (max ${fmt(worst)}), bildgenau ${fmt(100 * ex / all, 1)} %, ${rs} × nachsynchronisiert.`
+      : `<span style="color:var(--r)">Nicht sauber:</span> nur ${fmt(p, 1)} % ≤ 1 Bild (max ${fmt(worst)}) → Vorschau „näherungsweise“, Rückfall „Im Zusammenhang spielen“.`;
+  }
+}
+
+// Bedienung
+const playToggle = () => { if (A.paused) { A.play(); ev('play', { t: +A.currentTime.toFixed(2) }); } else { A.pause(); ev('pause', { t: +A.currentTime.toFixed(2) }); } };
+A.onplay = () => ($('play').textContent = '⏸ Pause'); A.onpause = () => { $('play').textContent = '▶ Abspielen'; B.pause(); };
+$('play').onclick = playToggle;
+const seek = (t) => { cur = null; B.pause(); A.currentTime = Math.max(0, t); ev('seek', { t: +t.toFixed(2) }); };
+$('back').onclick = () => seek(A.currentTime - 5); $('fwd').onclick = () => seek(A.currentTime + 5);
+$('nextShot').onclick = () => { const s = nextTest(A.currentTime + 0.1) || tests[0]; seek(vIn(s) - 2); };
+$('diff').onchange = (e) => $('stage').classList.toggle('diff', e.target.checked);
+document.addEventListener('visibilitychange', () => ev(document.hidden ? 'hintergrund' : 'vordergrund', { t: +A.currentTime.toFixed(2), aPaused: A.paused }));
+
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const until = async (t) => { while (autoRun && A.currentTime < t) await wait(40); };
+$('auto').onclick = async () => {
+  if (autoRun) { autoRun = false; return; }
+  autoRun = true; $('auto').textContent = 'Test abbrechen'; ev('auto-start');
+  for (const [i, s] of tests.entries()) {
+    if (!autoRun) break;
+    if (i === 4) { seek((vIn(s) + vOut(s)) / 2); ev('test: Start mitten im Shot'); }   // Sprung in einen Shot hinein
+    else seek(vIn(s) - 2);
+    await wait(400); await A.play();
+    if (i === 2) { await until((vIn(s) + vOut(s)) / 2); A.pause(); ev('test: Pause im Shot'); await wait(1200); await A.play(); }
+    await until(vOut(s) + 0.4); A.pause(); render(); await wait(300);
+  }
+  autoRun = false; $('auto').textContent = 'Automatischer Test'; ev('auto-ende'); render();
+};
+$('copy').onclick = async () => {
+  const out = { ua: navigator.userAgent, version: ver && ver.version_id, zeit: new Date().toISOString(), verdict: $('verdict').textContent,
+    shots: [...R.values()].map((r) => ({ nr: r.s.nr, clip: r.s.clip, n: r.n, avg: r.n ? +(r.sum / r.n).toFixed(2) : null, max: +r.max.toFixed(2),
+      ok_pct: r.n ? +(100 * r.ok / r.n).toFixed(1) : null, exakt_pct: r.n ? +(100 * r.exact / r.n).toFixed(1) : null, start: r.start == null ? null : +r.start.toFixed(2), resync: r.resync })), ereignisse: EV };
+  const txt = JSON.stringify(out, null, 1);
+  try { await navigator.clipboard.writeText(txt); $('copy').textContent = 'Kopiert ✓'; }
+  catch { const f = new File([txt], 'sync_test.json', { type: 'application/json' }); if (navigator.share) navigator.share({ files: [f] }); }
+};
+</script>
+</body>
+</html>
