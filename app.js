@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v3.4';
+const APP_VERSION = 'v3.4c';
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
 
@@ -1560,6 +1560,7 @@ document.addEventListener('visibilitychange', () => {
   if (oldLog && oldLog.length) LOG.unshift(...oldLog.slice(-LOG_MAX + 50));
   log('app-start', { v: APP_VERSION, ua: navigator.userAgent.slice(0, 120), standalone: !!navigator.standalone || matchMedia('(display-mode: standalone)').matches });
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  $('appVer').textContent = `Burning Balls ${APP_VERSION}`;
   await showHome();
   { const hi = new Image(); hi.onload = () => $('hero').classList.add('has-img'); hi.src = 'hero.jpg'; }
   // ?import=<Pfad>/ lädt einen Projektordner vom selben Server (Testserver am PC, ohne Dateiauswahl)
