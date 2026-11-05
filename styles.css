@@ -185,6 +185,8 @@ body.fs .cutbar { bottom: 320px; }
 .cut-btn { min-width: 84px; min-height: 84px; border-radius: 42px; font-size: 36px; background: var(--sel); color: #1a1400; touch-action: manipulation; }
 .cut-btn.hit { animation: cuthit .18s ease-out; }
 @keyframes cuthit { 0% { transform: scale(0.88); filter: brightness(1.4); } 100% { transform: scale(1); } }
+.cut-rec { min-width: 62px; min-height: 62px; border-radius: 31px; font-size: 22px; background: #fff; color: #000; }
+.cutbar.recording .cut-rec { opacity: .35; }
 .cut-stop { min-width: 62px; min-height: 62px; border-radius: 31px; font-size: 22px; background: var(--red); color: #fff; }
 .cutbar.recording .cut-btn { box-shadow: 0 0 0 5px rgba(255, 69, 58, 0.55); }
 .countdown { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 3; pointer-events: none;

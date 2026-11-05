@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v3.2';
+const APP_VERSION = 'v3.3';
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
 
@@ -94,6 +94,7 @@ const S = {
 };
 const CUT = { mode: false, rec: null, countdown: null };
 const TAKE_H = 24; // Höhe einer Cut-Take-Zeile in der Timeline
+const COM_H = 28;  // Kommentar-Zeile: antippen = Marker + Sprachnotiz am Abspielzeiger
 
 /* ---------- Projekte ---------- */
 async function showHome() {
@@ -534,19 +535,30 @@ function toggleCutMode(on = !CUT.mode) {
   if (!on) stopCutRec();
   CUT.mode = on; $('cutbar').classList.toggle('hidden', !on);
   log('cutmodus', { an: on });
-  if (on) toast('✂ = Start nach 3-2-1, dann bei jedem Schnitt ✂ tippen · ■ beendet', 4000);
+  if (on) toast('▶ = Takt-Aufnahme nach 3-2-1 · ✂ = Cut (auch einzeln ohne Aufnahme) · ■ = Stopp', 4500);
   requestDraw();
 }
 function cutNow() { const c = S.byId.get(video.dataset.cid); return c && S.playing ? c.s + video.currentTime : S.T; }
 function cutTap() {
   if (CUT.countdown) return;
-  if (!CUT.rec) { startCutCountdown(); return; }
+  if (!CUT.rec) { singleCut(cutNow()); return; }
   const tNow = cutNow(); CUT.rec.cuts.push(tNow);
   log('cut', { pos: +tNow.toFixed(3) });
   const b = $('btnCut'); b.classList.remove('hit'); void b.offsetWidth; b.classList.add('hit');
   requestDraw();
 }
+// Einzel-Cut ohne Aufnahme: landet in der Zeile „Einzel-Cuts“, zählt mit seinem eigenen Zeitpunkt beim Ersetzen
+function singleCut(tc) {
+  let tk = S.state.takes.find((x) => x.single);
+  if (!tk) { tk = { id: uid(), single: true, start: tc, end: tc, cuts: [], cutCreated: [], created: Date.now() }; S.state.takes.push(tk); }
+  tk.cuts.push(tc); tk.cutCreated.push(Date.now());
+  tk.start = Math.min(...tk.cuts); tk.end = Math.max(...tk.cuts);
+  log('einzel-cut', { pos: +tc.toFixed(3) }); flash('✂ Cut gesetzt');
+  const b = $('btnCut'); b.classList.remove('hit'); void b.offsetWidth; b.classList.add('hit');
+  changed();
+}
 function startCutCountdown() {
+  if (CUT.rec || CUT.countdown) return;
   stopPlay();
   let n = 3; const el = $('countdown'); el.textContent = n; el.classList.remove('hidden');
   log('cut-countdown', { pos: +S.T.toFixed(3) });
@@ -568,9 +580,14 @@ function stopCutRec() {
   changed(); toast(`${take.cuts.length} Cuts aufgenommen – Take antippen, ✕ löscht`);
 }
 function effectiveCuts() {
+  const ev = [];
+  for (const tk of S.state.takes || []) {
+    if (tk.single) tk.cuts.forEach((ct, i) => ev.push({ id: tk.id, start: ct, end: ct, cuts: [ct], created: (tk.cutCreated || [])[i] || tk.created }));
+    else ev.push(tk);
+  }
   let cuts = [];
-  for (const tk of [...(S.state.takes || [])].sort((a, b) => a.created - b.created)) {
-    cuts = cuts.filter((c) => c.t < tk.start || c.t > tk.end);
+  for (const tk of ev.sort((a, b) => a.created - b.created)) {
+    if (tk.end > tk.start) cuts = cuts.filter((c) => c.t < tk.start || c.t > tk.end);
     cuts.push(...tk.cuts.map((ct) => ({ t: ct, take: tk.id })));
   }
   return cuts.sort((a, b) => a.t - b.t);
@@ -748,9 +765,9 @@ window.addEventListener('resize', resizeCanvas);
 function laneGeom() {
   const h = cv.height / (window.devicePixelRatio || 1);
   const nt = ((S.state && S.state.takes) ? S.state.takes.length : 0) + (CUT.rec ? 1 : 0);
-  const lh = Math.max(30, Math.min(70, (h - RULER - 6 - nt * TAKE_H) / S.tracks.length));
-  const base = RULER + 4 + S.tracks.length * lh;
-  return { lh, y: (i) => RULER + 4 + i * lh, ty: (k) => base + k * TAKE_H, nt };
+  const lh = Math.max(30, Math.min(70, (h - RULER - 6 - COM_H - nt * TAKE_H) / S.tracks.length));
+  const cy = RULER + 4 + S.tracks.length * lh;
+  return { lh, y: (i) => RULER + 4 + i * lh, cy, ty: (k) => cy + COM_H + k * TAKE_H, nt };
 }
 const W = () => cv.width / (window.devicePixelRatio || 1);
 // Beim Ziehen eines In/Out-Griffs bleibt die Ansicht stehen (viewLock), sonst läuft sie mit dem Playhead
@@ -806,10 +823,16 @@ function draw() {
     const cs = selByClip.get(c.id);
     if (cs) {
       const iv = cs.map((s) => [xOf(c.s + s.inT), xOf(c.s + s.outT)]).sort((a, b) => a[0] - b[0]);
-      ctx.fillStyle = 'rgba(14,15,17,0.68)';
-      let cur = x0;
-      for (const [a, b] of iv) { if (a > cur) ctx.fillRect(cur, yy, a - cur, hh); cur = Math.max(cur, b); }
-      if (cur < x1) ctx.fillRect(cur, yy, x1 - cur, hh);
+      if (S.proj.meta.kind === 'version') {
+        // Review einer Schnittversion: der kommentierte Bereich wird dunkler, der Rest bleibt normal
+        ctx.fillStyle = 'rgba(0,0,0,0.45)';
+        for (const [a, b] of iv) ctx.fillRect(a, yy, b - a, hh);
+      } else {
+        ctx.fillStyle = 'rgba(14,15,17,0.68)';
+        let cur = x0;
+        for (const [a, b] of iv) { if (a > cur) ctx.fillRect(cur, yy, a - cur, hh); cur = Math.max(cur, b); }
+        if (cur < x1) ctx.fillRect(cur, yy, x1 - cur, hh);
+      }
     }
     ctx.restore();
     ctx.strokeStyle = trackOf(c.track).color; ctx.lineWidth = 1.5; if (FS) ctx.globalAlpha = 0.7;
@@ -863,6 +886,15 @@ function draw() {
   // Cut-Takes: eine Zeile je Aufnahme mit gelben Strichen; gültige Cuts zusätzlich als feine Linie über die Spuren
   {
     const G = laneGeom(); S.xbox = null;
+    ctx.fillStyle = FS ? 'rgba(255,255,255,0.05)' : '#141518'; ctx.fillRect(HEAD, G.cy + 1, w - HEAD, COM_H - 3);
+    for (const s of sels()) {
+      if (s.kind !== 'marker') continue;
+      const x = xOf(s.t); if (x < HEAD - 20 || x > w + 20) continue;
+      const cur = s === S.curSel;
+      ctx.fillStyle = cur ? '#f2c14e' : '#e8e8ec';
+      ctx.beginPath(); roundRect(x - 2, G.cy + 4, 18, COM_H - 9, 4); ctx.fill();
+      ctx.fillStyle = '#111'; ctx.font = '700 10px sans-serif'; ctx.fillText(s.notes.length ? '🎙' : '⚑', x + 1, G.cy + 18);
+    }
     const takes = [...(S.state.takes || [])]; if (CUT.rec) takes.push({ ...CUT.rec, end: S.T, live: true });
     const eff = new Set(effectiveCuts().map((c) => c.take + ':' + c.t));
     takes.forEach((tk, k) => {
@@ -926,8 +958,12 @@ function draw() {
       const live = CUT.rec && k === n - 1;
       ctx.fillStyle = FS ? 'rgba(0,0,0,0.45)' : '#1a1c1f'; ctx.fillRect(0, G.ty(k) + 1, HEAD - 4, TAKE_H - 3);
       ctx.fillStyle = live ? '#ff453a' : '#f2c14e'; ctx.font = '600 11px -apple-system, Segoe UI, sans-serif';
-      ctx.fillText(live ? '● Aufnahme' : `✂ Take ${k + 1}`, 8, G.ty(k) + 16);
-    } }
+      const tk = (S.state.takes || [])[k];
+      ctx.fillText(live ? '● Aufnahme' : (tk && tk.single ? '✂ Einzel-Cuts' : `✂ Take ${k + 1}`), 8, G.ty(k) + 16);
+    }
+    ctx.fillStyle = FS ? 'rgba(0,0,0,0.45)' : '#1a1c1f'; ctx.fillRect(0, G.cy + 1, HEAD - 4, COM_H - 3);
+    ctx.fillStyle = '#e8e8ec'; ctx.font = '600 11px -apple-system, Segoe UI, sans-serif'; ctx.fillText('💬 Kommentar', 8, G.cy + 18);
+  }
 
   // Playhead
   const px = cx + (r2d(S.T) - dNow) * S.pps;
@@ -953,6 +989,11 @@ const ptrs = new Map();
 let g = null; // aktuelle Geste
 function hit(x, y) {
   const G = laneGeom();
+  if (y >= G.cy && y < G.cy + COM_H) {
+    if (x < HEAD) return { type: 'comment' };
+    const m = sels().filter((s) => s.kind === 'marker').map((s) => ({ s, d: Math.abs(xOf(s.t) + 7 - x) })).sort((a, b) => a.d - b.d)[0];
+    return m && m.d < 18 ? { type: 'comment', marker: m.s } : { type: 'comment' };
+  }
   if (G.nt && y >= G.ty(0)) {
     const tk = (S.state.takes || [])[Math.floor((y - G.ty(0)) / TAKE_H)];
     if (!tk) return { type: 'empty' };
@@ -1059,7 +1100,7 @@ cv.addEventListener('pointermove', (e) => {
     showHandleFrame(); if (g.fine) updateLoupe();
     requestDraw(); return;
   }
-  if (g.type === 'lane' || g.type === 'sel' || g.type === 'empty' || g.type === 'head' || g.type === 'take' || g.type === 'takex') {
+  if (g.type === 'lane' || g.type === 'sel' || g.type === 'empty' || g.type === 'head' || g.type === 'take' || g.type === 'takex' || g.type === 'comment') {
     if (!g.moved) return;
     S.T = d2r(clamp(g.dT - dx / S.pps, -1, S.axis.total + 1));
     showFrame(false); requestDraw();
@@ -1084,6 +1125,11 @@ function endPointer(e) {
   if (!g.lpDone) $('loupe').classList.add('hidden');
   viewLock = null;
   if (g.lpDone) { g = null; requestDraw(); return; }
+  if (!g.moved && !g.fine && g.type === 'comment') {
+    if (g.marker) { S.curSel = g.marker; log('kommentar-gewaehlt', { id: g.marker.id }); renderSide(); }
+    else { S.curSel = addMarker(); log('kommentar-neu', { pos: +S.T.toFixed(3) }); toggleRec(); }
+    g = null; requestDraw(); return;
+  }
   if (!g.moved && !g.fine && (g.type === 'take' || g.type === 'takex')) {
     if (g.type === 'takex') deleteTake(g.take.id);
     else { S.selTake = S.selTake === g.take.id ? null : g.take.id; log('take-gewaehlt', { id: S.selTake }); }
@@ -1171,7 +1217,7 @@ async function buildExport() {
   const fps = isVersion ? S.clips[0].fps : 25;
   const rel = (x) => +(isVersion ? x - base : ((x % 86400) + 86400) % 86400).toFixed(3);
   out.kind = S.proj.meta.kind || 'footage';
-  out.takes = JSON.parse(JSON.stringify(S.state.takes || [])).map((tk) => ({ id: tk.id, start: rel(tk.start), end: rel(tk.end), created: new Date(tk.created).toISOString(), cuts: tk.cuts.map(rel) }));
+  out.takes = JSON.parse(JSON.stringify(S.state.takes || [])).map((tk) => ({ id: tk.id, single: !!tk.single, start: rel(tk.start), end: rel(tk.end), created: new Date(tk.created).toISOString(), cuts: tk.cuts.map(rel), cutCreated: tk.cutCreated || null }));
   out.cuts = effectiveCuts().map((c) => ({ t: rel(c.t), frame: Math.round(rel(c.t) * fps), tc: clock(rel(c.t), fps), take: c.take }));
   return out;
 }
@@ -1264,7 +1310,7 @@ async function loadSelection(d) {
   S.state.selections = list; S.state.offsets = d.offsets || {};
   if (Array.isArray(d.takes)) {
     const base = S.proj.meta.kind === 'version' ? S.clips[0].s0 : (S.clips[0].s0 - (((S.clips[0].s0 % 86400) + 86400) % 86400));
-    S.state.takes = d.takes.map((tk) => ({ id: tk.id, start: base + tk.start, end: base + tk.end, created: Date.parse(tk.created) || Date.now(), cuts: tk.cuts.map((x) => base + x) }));
+    S.state.takes = d.takes.map((tk) => ({ id: tk.id, single: !!tk.single, start: base + tk.start, end: base + tk.end, created: Date.parse(tk.created) || Date.now(), cuts: tk.cuts.map((x) => base + x), ...(tk.cutCreated ? { cutCreated: tk.cutCreated } : {}) }));
   }
   applyOffsets(); S.curSel = null;
   if (d.view) { S.T = d.view.T ?? S.T; S.activeTrack = d.view.activeTrack || S.activeTrack; S.pps = d.view.pps || S.pps; }
@@ -1284,7 +1330,8 @@ function help() {
     <li><b>Spurname antippen</b> = Spur verschieben, falls die Kamera-Uhr falsch ging.</li>
     <li>Lücken ohne Aufnahme sind auf 2 s gekürzt (gestrichelt, mit echter Dauer).</li>
     <li><b>Lange auf die Timeline oder aufs Video drücken</b> = IN am Abspielzeiger, nochmal lange drücken = OUT. Beliebig viele Stellen pro Clip; alles außerhalb wird ausgegraut. Lange auf einen gelben Rand drücken = Lupe zum Feinjustieren.</li>
-    <li><b>Schnittversion prüfen</b> (Startseite): ein fertiges Video laden. <b>✂</b> in der Leiste öffnet den Cut-Takt: großes ✂ startet nach 3-2-1, dann bei jedem Schnitt ✂ tippen, rotes ■ beendet. Jede Aufnahme ist ein Take (gelbe Striche); neuere Takes ersetzen ältere in ihrem Bereich. Take antippen → ✕ löscht. Am PC: C = Schnitt, V = Stopp.</li>
+    <li><b>Schnittversion prüfen</b> (Startseite): ein fertiges Video laden. <b>✂</b> in der Leiste öffnet den Cut-Takt: <b>▶</b> startet die Takt-Aufnahme nach 3-2-1, <b>✂</b> setzt Cuts (ohne Aufnahme: ein einzelner Cut am Abspielzeiger), rotes <b>■</b> stoppt. Jede Aufnahme ist ein Take (gelbe Striche); neuere Takes ersetzen ältere in ihrem Bereich. Take antippen → ✕ löscht. Am PC: B = Aufnahme, C = Cut, V = Stopp.</li>
+    <li><b>💬 Kommentar-Zeile</b> unter den Spuren antippen = Marker am Abspielzeiger + Sprachnotiz startet sofort (🎙 nochmal = Ende). Vorhandenen Kommentar antippen = auswählen. Bereich kommentieren: IN/OUT setzen + Notiz – bei Schnittversionen wird der Bereich dunkler.</li>
     <li>Die Zeile <b>„🎙 Notiz zu …“</b> zeigt immer, wohin die nächste Sprachnotiz geht. Eintrag in der Shortlist oder auf der Timeline antippen = auswählen.</li>
     <li><b>↶</b> oben rechts = Rückgängig (auch Löschen), <b>↷</b> = Wiederholen.</li>
     <li><b>⛶ Vollbild</b>: Video bildschirmfüllend, Timeline durchsichtig darüber. <b>•••</b> klappt die Knöpfe aus. Aufs Video tippen = Play/Pause.</li>
@@ -1314,6 +1361,7 @@ const ACT = {
   fs: () => toggleFS(),
   cutmode: () => toggleCutMode(),
   cutstop: () => stopCutRec(),
+  cutrec: () => startCutCountdown(),
   more: () => document.body.classList.toggle('fs-open'),
 };
 function updateMute() { document.querySelectorAll('[data-act=mute]').forEach((b) => { b.textContent = S.muted ? '🔇' : '🔊'; }); }
@@ -1382,6 +1430,7 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'y' && (e.ctrlKey || e.metaKey)) redo();
   else if (k === 'f') toggleFS();
   else if (k === 'c' && CUT.mode) cutTap();
+  else if (k === 'b' && CUT.mode) startCutCountdown();
   else if (k === 'v' && CUT.mode) stopCutRec();
   else if (k === 'escape' && S.fs) toggleFS(false);
   else if (k === 'i') ACT.in(); else if (k === 'o') ACT.out(); else if (k === 'm') ACT.marker(); else if (k === 'n') ACT.rec();
