@@ -91,6 +91,7 @@
         <button data-act="out" class="mark" title="Out-Punkt (O)">OUT</button>
         <button data-act="marker" title="Marker an dieser Stelle (M)">⚑</button>
         <button data-act="cutmode" title="Cut-Takt">✂</button>
+        <button data-act="reel" title="Shortlist abspielen (R)">▶★</button>
         <button data-act="rec" class="rec" title="Sprachnotiz (N)">🎙</button>
         <button data-act="mute" title="Ton an/aus">🔊</button>
       </div>
@@ -101,9 +102,17 @@
       <div id="current" class="current"></div>
       <div class="list-head">
         <span>Shortlist</span><span id="selCount" class="muted"></span>
+        <button data-act="reel" class="mini" title="Nur die In/Out-Stellen abspielen (R)">▶ abspielen</button>
       </div>
       <div id="selList" class="sel-list"></div>
     </aside>
+  </div>
+
+  <!-- Shortlist abspielen: Position + Sterne, auch im Vollbild -->
+  <div id="reelBar" class="reel-bar hidden">
+    <span class="reel-pos"></span>
+    <button data-star="1">★</button><button data-star="2">★</button><button data-star="3">★</button>
+    <button data-act="reel" class="reel-end" title="Beenden">✕</button>
   </div>
 
   <!-- Vollbild: schwebende Knöpfe -->

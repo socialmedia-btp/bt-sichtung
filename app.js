@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v3.3';
+const APP_VERSION = 'v3.4';
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
 
@@ -423,6 +423,7 @@ function stopPlay() {
   S.switching = false; video.pause(); save();
   log('stop', vstate());
   if (CUT.rec) setTimeout(stopCutRec, 0);
+  if (reel && !reel.stepping) { const r = reel; reel = null; document.body.classList.remove('reel'); updateReelBar(); log('shortlist-stopp', { bei: r.i + 1 }); }
 }
 function resumeAfterSwitch() {
   clearTimeout(S.switchTimer); video.removeEventListener('seeked', resumeAfterSwitch);
@@ -460,6 +461,10 @@ function playTick() {
       S.switchTimer = setTimeout(() => { if (S.switching) { log('wechsel-haengt', vstate()); resumeAfterSwitch(); } }, 1500);
     }
     if (video.currentTime > 0.05) S.stuck = 0;
+    if (reel && !reel.stepping) {
+      const s = reel.list[reel.i];
+      if (s && S.T >= selRange(s)[1] - 0.02) { reel.i++; reelStep(); return; }
+    }
     updateHud(shownClip());
   }
   requestDraw();
@@ -690,6 +695,36 @@ function renderCurrent() {
     if (k.startsWith('pn')) return playNote(s.notes[+k.slice(2)]);
     if (k.startsWith('dn')) { const n = s.notes[+k.slice(2)]; s.notes = s.notes.filter((x) => x !== n); return changed(); }
   });
+}
+/* ---------- Shortlist abspielen ----------
+ * Nur die In/Out-Stellen chronologisch hintereinander – zum Bewerten mit Sternen. */
+let reel = null;
+function playShortlist() {
+  const list = sels().filter((s) => s.kind === 'range' && !s.open).sort((a, b) => selRange(a)[0] - selRange(b)[0]);
+  if (!list.length) { toast('Noch keine fertige Auswahl (IN + OUT)'); return; }
+  let i = list.indexOf(S.curSel); if (i < 0) i = 0;
+  reel = { list, i }; log('shortlist-start', { n: list.length, ab: i + 1 });
+  document.body.classList.add('reel'); reelStep();
+}
+function reelStep() {
+  if (!reel) return;
+  const s = reel.list[reel.i];
+  if (!s) { endReel(); toast('Shortlist durch'); return; }
+  reel.stepping = true; jumpTo(s); reel.stepping = false;
+  updateReelBar(); lastToggle = 0; play();
+}
+function reelMove(d) { if (!reel) return false; reel.i = clamp(reel.i + d, 0, reel.list.length); reelStep(); return true; }
+function endReel() { if (!reel) return; log('shortlist-ende', { bei: reel.i + 1 }); reel = null; document.body.classList.remove('reel'); stopPlay(); updateReelBar(); }
+function updateReelBar() {
+  const el = $('reelBar'); if (!el) return;
+  if (!reel) { el.classList.add('hidden'); return; }
+  const s = reel.list[reel.i]; el.classList.remove('hidden');
+  el.querySelector('.reel-pos').textContent = `${reel.i + 1}/${reel.list.length}`;
+  el.querySelectorAll('[data-star]').forEach((b) => b.classList.toggle('on', !!s && s.stars >= +b.dataset.star));
+}
+function setStars(n) {
+  const s = (reel && reel.list[reel.i]) || S.curSel; if (!s || s.kind !== 'range') return;
+  s.stars = s.stars === n ? 0 : n; log('sterne', { id: s.id, n: s.stars }); changed(); updateReelBar();
 }
 let selStop = null;
 function playSelection(s) {
@@ -1331,6 +1366,7 @@ function help() {
     <li>Lücken ohne Aufnahme sind auf 2 s gekürzt (gestrichelt, mit echter Dauer).</li>
     <li><b>Lange auf die Timeline oder aufs Video drücken</b> = IN am Abspielzeiger, nochmal lange drücken = OUT. Beliebig viele Stellen pro Clip; alles außerhalb wird ausgegraut. Lange auf einen gelben Rand drücken = Lupe zum Feinjustieren.</li>
     <li><b>Schnittversion prüfen</b> (Startseite): ein fertiges Video laden. <b>✂</b> in der Leiste öffnet den Cut-Takt: <b>▶</b> startet die Takt-Aufnahme nach 3-2-1, <b>✂</b> setzt Cuts (ohne Aufnahme: ein einzelner Cut am Abspielzeiger), rotes <b>■</b> stoppt. Jede Aufnahme ist ein Take (gelbe Striche); neuere Takes ersetzen ältere in ihrem Bereich. Take antippen → ✕ löscht. Am PC: B = Aufnahme, C = Cut, V = Stopp.</li>
+    <li><b>▶★ Shortlist abspielen</b>: spielt nur deine In/Out-Stellen nacheinander; oben ★★★ zum Bewerten (Taste 1–3), ⏮ ⏭ = vorige/nächste Stelle, Play/Pause beendet.</li>
     <li><b>💬 Kommentar-Zeile</b> unter den Spuren antippen = Marker am Abspielzeiger + Sprachnotiz startet sofort (🎙 nochmal = Ende). Vorhandenen Kommentar antippen = auswählen. Bereich kommentieren: IN/OUT setzen + Notiz – bei Schnittversionen wird der Bereich dunkler.</li>
     <li>Die Zeile <b>„🎙 Notiz zu …“</b> zeigt immer, wohin die nächste Sprachnotiz geht. Eintrag in der Shortlist oder auf der Timeline antippen = auswählen.</li>
     <li><b>↶</b> oben rechts = Rückgängig (auch Löschen), <b>↷</b> = Wiederholen.</li>
@@ -1353,8 +1389,8 @@ const ACT = {
   },
   backF: () => stepFrames(-1), fwdF: () => stepFrames(1),
   back1s: () => jumpSec(-1), fwd1s: () => jumpSec(1),
-  prevClip: () => { stopPlay(); const c = prevClipStart(S.T); if (c) { S.T = c.s; showFrame(true); requestDraw(); save(); } },
-  nextClip: () => { stopPlay(); const c = nextClipStart(S.T); if (c) { S.T = c.s; showFrame(true); requestDraw(); save(); } },
+  prevClip: () => { if (reelMove(-1)) return; stopPlay(); const c = prevClipStart(S.T); if (c) { S.T = c.s; showFrame(true); requestDraw(); save(); } },
+  nextClip: () => { if (reelMove(1)) return; stopPlay(); const c = nextClipStart(S.T); if (c) { S.T = c.s; showFrame(true); requestDraw(); save(); } },
   in: markIn, out: markOut, marker: addMarker, rec: toggleRec,
   mute: () => { S.muted = !S.muted; video.muted = S.muted; updateMute(); },
   undo, redo,
@@ -1362,9 +1398,11 @@ const ACT = {
   cutmode: () => toggleCutMode(),
   cutstop: () => stopCutRec(),
   cutrec: () => startCutCountdown(),
+  reel: () => (reel ? endReel() : playShortlist()),
   more: () => document.body.classList.toggle('fs-open'),
 };
 function updateMute() { document.querySelectorAll('[data-act=mute]').forEach((b) => { b.textContent = S.muted ? '🔇' : '🔊'; }); }
+document.querySelectorAll('#reelBar [data-star]').forEach((b) => b.addEventListener('click', () => setStars(+b.dataset.star)));
 document.querySelectorAll('button[data-act]').forEach((b) => b.addEventListener('click', () => { log('knopf', { act: b.dataset.act }); ACT[b.dataset.act](); }));
 // Aufs Video tippen = Play/Pause
 let vPress = null;
@@ -1431,6 +1469,8 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'f') toggleFS();
   else if (k === 'c' && CUT.mode) cutTap();
   else if (k === 'b' && CUT.mode) startCutCountdown();
+  else if (k === 'r') ACT.reel();
+  else if (k === '1' || k === '2' || k === '3') setStars(+k);
   else if (k === 'v' && CUT.mode) stopCutRec();
   else if (k === 'escape' && S.fs) toggleFS(false);
   else if (k === 'i') ACT.in(); else if (k === 'o') ACT.out(); else if (k === 'm') ACT.marker(); else if (k === 'n') ACT.rec();
