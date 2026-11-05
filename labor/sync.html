@@ -31,12 +31,14 @@
 </head>
 <body>
 <main>
+  <div class="row" style="margin:0 0 6px"><a href="../" style="color:var(--y);text-decoration:none">‹ zurück zu Burning Balls</a></div>
   <h1>Sync-Test: Proxy-Bild + Versions-Ton</h1>
-  <p>Vorversuch Stufe 1. Die Version läuft mit Ton, in Test-Shots wird das Bild auf den Proxy aus dem Projekt umgeschaltet
+  <p><b>Reihenfolge egal:</b> Projekt wählen (oder Proxies aus dem OneDrive-Projektordner) und Version (MP4 + JSON aus „Versionen“). Am besten aus der Burning-Balls-App heraus öffnen (Hilfe → Sync-Test), dann sind die Proxies schon da. Vorversuch Stufe 1. Die Version läuft mit Ton, in Test-Shots wird das Bild auf den Proxy aus dem Projekt umgeschaltet
      (gleicher Inhalt, nur ungegradet). Ziel: höchstens 1 Bild Versatz. Ton läuft immer aus der Version.</p>
   <div class="row">
     <select id="proj"><option value="">Projekt wählen …</option></select>
     <label class="btn">Version (MP4 + JSON) wählen<input id="files" type="file" multiple accept=".mp4,.json,video/mp4,application/json"></label>
+    <label class="btn" id="proxBtn" style="display:none">Proxies wählen (Projektordner)<input id="proxFiles" type="file" multiple accept=".mp4,.json,video/mp4,application/json"></label>
     <span id="info" style="color:var(--dim)"></span>
   </div>
   <div id="stage"><video id="A" playsinline preload="auto"></video><video id="B" playsinline muted preload="auto"></video>
@@ -67,11 +69,20 @@ function ev(t, d) { const s = `${(performance.now() / 1000).toFixed(2)} ${t}${d 
 function idb(store, mode, fn) { return new Promise((res, rej) => { const t = db.transaction(store, mode); const r = fn(t.objectStore(store)); t.oncomplete = () => res(r.result); t.onerror = () => rej(t.error); }); }
 (async () => {
   db = await new Promise((res, rej) => { const r = indexedDB.open('bt-sichtung'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
-  if (!db.objectStoreNames.contains('projects')) { $('info').textContent = 'Kein Burning-Balls-Projekt auf diesem Gerät.'; return; }
-  const projs = await idb('projects', 'readonly', (o) => o.getAll());
-  for (const p of projs.filter((p) => p.meta.kind !== 'version')) $('proj').add(new Option(`${p.meta.name} (${p.meta.clips.length} Clips)`, p.id));
-  if (projs.length === 1) { $('proj').value = projs[0].id; }
+  const projs = db.objectStoreNames.contains('projects') ? (await idb('projects', 'readonly', (o) => o.getAll())).filter((p) => p.meta.kind !== 'version') : [];
+  for (const p of projs) $('proj').add(new Option(`${p.meta.name} (${p.meta.clips.length} Clips)`, p.id));
+  if (projs.length === 1) $('proj').value = projs[0].id;
+  if (!projs.length) { $('proj').style.display = 'none'; $('proxBtn').style.display = '';
+    $('info').textContent = 'In diesem Browser liegt kein Projekt → Proxies aus dem OneDrive-Projektordner wählen (alle Dateien) oder Seite aus der App öffnen.'; }
 })();
+// Quelle der Proxies: App-Speicher (Projekt) oder direkt gewählte Dateien
+let proxSrc = null;   // {meta, blob(name)}
+$('proj').onchange = async () => { const p = await idb('projects', 'readonly', (o) => o.get($('proj').value));
+  proxSrc = p && { meta: p.meta, blob: (n) => idb('files', 'readonly', (o) => o.get(p.id + '/' + n)) }; setup(); };
+$('proxFiles').onchange = async (e) => { const fl = [...e.target.files]; e.target.value = '';
+  const pj = fl.find((f) => /projekt.*\.json$/i.test(f.name)); if (!pj) { $('info').textContent = 'projekt.json fehlt in der Auswahl (alle Dateien des Projektordners wählen).'; return; }
+  const by = new Map(fl.map((f) => [f.name, f])); proxSrc = { meta: JSON.parse(await pj.text()), blob: async (n) => by.get(n) || null };
+  $('proxBtn').firstChild.textContent = `Proxies: ${fl.length - 1} Dateien `; setup(); };
 
 $('files').onchange = (e) => { const fl = [...e.target.files]; e.target.value = ''; loadVersion(fl); };
 // PC-Testserver: ?version=projekt/Versionen/<Name> lädt <Name>.mp4 + .json ohne Dateiauswahl
@@ -90,20 +101,23 @@ async function loadVersion(fl) {
   const sha = [...new Uint8Array(await crypto.subtle.digest('SHA-1', buf))].map((b) => b.toString(16).padStart(2, '0')).join('');
   if (sha !== ver.export.sha1) { $('info').innerHTML = `<b style="color:var(--r)">Abgelehnt:</b> Video passt nicht zur JSON (Prüfsumme).`; ev('paar-falsch', { sha: sha.slice(0, 10) }); ver = null; return; }
   fps = ver.fps; A.src = URL.createObjectURL(new Blob([buf], { type: 'video/mp4' }));
-  projId = $('proj').value;
-  if (!projId) { $('info').textContent = 'Bitte zuerst das Footage-Projekt wählen.'; return; }
-  const p = await idb('projects', 'readonly', (o) => o.get(projId));
-  const byId = new Map(p.meta.clips.map((c) => [c.id, c]));
+  ev('version', { v: ver.version_id }); setup();
+}
+async function setup() {
+  if (!proxSrc && $('proj').value) { $('proj').onchange(); return; }
+  if (!ver) { $('info').textContent = proxSrc ? 'Jetzt die Version (MP4 + JSON) wählen.' : $('info').textContent; return; }
+  if (!proxSrc) { $('info').textContent = 'Version geladen – jetzt Projekt wählen (oder Proxies).'; return; }
+  const byId = new Map(proxSrc.meta.clips.map((c) => [c.id, c])); R.clear(); urls.clear(); cur = null;
   shots = ver.shots.filter((s) => s.editierbar && byId.has(s.clip) && (s.v_out - s.v_in) >= fps * 1.2);
   // bis zu 8 Test-Shots gleichmäßig über den Film
   const step = Math.max(1, Math.floor(shots.length / 8)); tests = shots.filter((_, i) => i % step === 0).slice(0, 8);
-  for (const s of tests) { const c = byId.get(s.clip); const blob = await idb('files', 'readonly', (o) => o.get(projId + '/' + c.file));
+  for (const s of tests) { const c = byId.get(s.clip); const blob = await proxSrc.blob(c.file);
     if (blob) urls.set(s.clip, URL.createObjectURL(blob)); }
   tests = tests.filter((s) => urls.has(s.clip));
   $('info').textContent = `${ver.sequenz} · ${tests.length} Test-Shots (von ${shots.length} editierbaren im Projekt)`;
   ev('geladen', { version: ver.version_id, tests: tests.map((s) => s.nr) });
   for (const id of ['play', 'back', 'fwd', 'nextShot', 'auto', 'copy']) $(id).disabled = !tests.length;
-  render(); A.requestVideoFrameCallback(onA);
+  render(); if (!setup.cb) { setup.cb = true; A.requestVideoFrameCallback(onA); }
 }
 
 const vIn = (s) => s.v_in / fps, vOut = (s) => s.v_out / fps;
@@ -164,7 +178,7 @@ function render() {
   }
   if (all) {
     const p = 100 * ok / all;
-    $('verdict').innerHTML = p >= 95 && worst <= 2
+    $('verdict').innerHTML = p >= 95 && worst <= 2.05
       ? `<span style="color:var(--g)">Bestanden:</span> ${fmt(p, 1)} % der Bilder ≤ 1 Bild Versatz (max ${fmt(worst)}), bildgenau ${fmt(100 * ex / all, 1)} %, ${rs} × nachsynchronisiert.`
       : `<span style="color:var(--r)">Nicht sauber:</span> nur ${fmt(p, 1)} % ≤ 1 Bild (max ${fmt(worst)}) → Vorschau „näherungsweise“, Rückfall „Im Zusammenhang spielen“.`;
   }

@@ -1374,7 +1374,7 @@ function help() {
     <li>Am PC: Leertaste = Play, ←/→ = ±1 Bild, Shift+←/→ = ±1 s, M = Marker, F = Vollbild, Strg+Z = Rückgängig.</li>
     <li>Alles wird automatisch auf diesem Gerät gespeichert. <b>Speichern</b> erstellt eine Datei mit deinem Stand; mit <b>Öffnen</b> machst du damit weiter – auch auf einem anderen Gerät, ohne Internet. Die Datei bekommt auch Claude.</li>
   </ul><p class="hint">Burning Balls ${APP_VERSION}</p>
-  <div class="row"><button id="mLog">Log ansehen</button><span class="grow"></span><button class="primary" onclick="closeModal()">OK</button></div>`,
+  <div class="row"><button id="mLog">Log ansehen</button><button onclick="location.href='labor/sync.html'">Sync-Test (Labor)</button><span class="grow"></span><button class="primary" onclick="closeModal()">OK</button></div>`,
   (b) => { b.querySelector('#mLog').onclick = showLog; });
 }
 
