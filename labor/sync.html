@@ -52,7 +52,7 @@
     <button id="copy" disabled>Ergebnis kopieren</button>
   </div>
   <div id="verdict"></div>
-  <table id="tbl"><thead><tr><th>Shot</th><th>Clip</th><th>Bilder</th><th>Ø Versatz</th><th>max</th><th>≤ 1 Bild</th><th>bildgenau</th><th>Start</th><th>Nachsync</th></tr></thead><tbody></tbody></table>
+  <table id="tbl"><thead><tr><th>Shot</th><th>Clip</th><th>Bilder</th><th>Ø Versatz</th><th>max</th><th>≤ 1 Bild</th><th>bildgenau</th><th>Proxy sichtbar</th><th>Nachsync</th></tr></thead><tbody></tbody></table>
   <h3>Ereignisse</h3><pre id="ev"></pre>
 </main>
 <script>
@@ -125,62 +125,82 @@ const srcAt = (s, aT) => s.src_in / s.src_fps + (aT - vIn(s));
 const shotAt = (t) => tests.find((s) => t >= vIn(s) - 1e-3 && t < vOut(s) - 1e-3);
 const nextTest = (t) => tests.find((s) => vIn(s) > t);
 
-let lead = 0.06;      // gelernte Startverzögerung von B
+// iPad: Sprünge im Proxy sind teuer (Ronin-Proxies: Keyframe nur alle 1 s). Deshalb: Proxy startet unsichtbar PRE s vor dem
+// Shot, wird danach nur über das Tempo nachgeführt und erst gezeigt, wenn er synchron ist. Gesprungen wird nur bei grobem Versatz.
+const PRE = 1.2;
+let seekLag = 0.15, started = false, synced = false, lastSeek = 0, justStarted = false, win = [];
+function startB(t) {
+  B.playbackRate = 1; win = []; synced = false; justStarted = true; started = true; lastSeek = performance.now();
+  B.currentTime = Math.max(0, srcAt(cur, t + seekLag));
+  B.play().catch((e) => ev('b-play-fehler', { e: String(e) }));
+}
 function onA(now, m) {
   aMeta = { t: m.mediaTime, d: m.expectedDisplayTime };
-  const t = m.mediaTime, s = shotAt(t + 1 / fps), up = nextTest(t);
-  // vorladen: nächster Test-Shot innerhalb 1,5 s
-  const pre = s || (up && vIn(up) - t < 1.5 ? up : null);
-  if (pre && cur !== pre) {
-    cur = pre; bad = 0;
-    if (B.dataset.clip !== pre.clip) { B.src = urls.get(pre.clip); B.dataset.clip = pre.clip; }
-    B.pause(); B.currentTime = srcAt(pre, Math.max(t, vIn(pre)));
-    R.has(pre.id) || R.set(pre.id, { s: pre, n: 0, sum: 0, max: 0, ok: 0, exact: 0, start: null, resync: 0 });
+  const t = m.mediaTime, s = shotAt(t), up = nextTest(t);
+  const target = s || (up && vIn(up) - t < PRE + 0.6 ? up : null);
+  if (target !== cur) {
+    if (cur) B.pause();
+    cur = target; started = false; synced = false;
+    if (cur) {
+      if (B.dataset.clip !== cur.clip) { B.src = urls.get(cur.clip); B.dataset.clip = cur.clip; }
+      R.has(cur.id) || R.set(cur.id, { s: cur, n: 0, sum: 0, max: 0, ok: 0, exact: 0, start: null, resync: 0, total: 0 });
+    }
   }
-  if (cur && !A.paused && t >= vIn(cur) - lead && t < vOut(cur) && B.paused) {
-    B.currentTime = srcAt(cur, t + lead); B.play().catch((e) => ev('b-play-fehler', { e: String(e) }));
-  }
-  const on = !!(cur && t >= vIn(cur) - 0.5 / fps && t < vOut(cur) - 0.5 / fps);
+  if (A.paused) { if (!B.paused) B.pause(); started = false; synced = false; }
+  else if (cur && !started && t >= vIn(cur) - PRE) startB(t);
+  const inShot = !!(cur && t >= vIn(cur) - 0.5 / fps && t < vOut(cur) - 0.5 / fps);
+  const on = inShot && synced;
   B.classList.toggle('on', on); $('badge').classList.toggle('on', on);
-  if (cur && t >= vOut(cur) - 0.5 / fps) { B.pause(); B.playbackRate = 1; cur = null; render(); }
-  if (A.paused && !B.paused) B.pause();
+  if (cur && t >= vOut(cur) - 0.5 / fps) { B.pause(); cur = null; started = false; render(); }
   A.requestVideoFrameCallback(onA);
 }
 function onB(now, m) {
-  if (cur && aMeta && !A.paused && B.classList.contains('on')) {
+  if (cur && aMeta && !A.paused && started) {
     const aT = aMeta.t + (m.expectedDisplayTime - aMeta.d) / 1000 * A.playbackRate;
     const off = (m.mediaTime - srcAt(cur, aT)) * fps;            // Versatz in Sequenzbildern (+ = Proxy voraus)
     const r = R.get(cur.id);
-    if (r.start == null) { r.start = off; lead = Math.min(0.25, Math.max(0, lead - off / fps * 0.5)); }
-    r.n++; r.sum += off; r.max = Math.max(r.max, Math.abs(off)); if (Math.abs(off) <= 1.05) r.ok++; if (Math.abs(off) < 0.5) r.exact++;
-    $('live').textContent = `Shot ${cur.nr} · ${off >= 0 ? '+' : ''}${fmt(off)} Bild`;
-    // Feinregelung: gleitender Mittelwert ≥ 0,5 Bild → Proxy kurz 4 % schneller/langsamer (kein Sprung, kein Ruckeln)
-    r.win = (r.win || []).concat(off).slice(-8); const mean = r.win.reduce((x, y) => x + y, 0) / r.win.length;
-    const rate = r.win.length >= 6 && Math.abs(mean) >= 0.5 ? 1 - Math.sign(mean) * 0.04 : 1;
-    if (B.playbackRate !== rate) B.playbackRate = rate;
-    bad = Math.abs(off) > 1.5 ? bad + 1 : 0;
-    if (bad >= 3) { r.resync++; bad = 0; B.currentTime = srcAt(cur, aT + lead); ev('nachsync', { shot: cur.nr, off: +off.toFixed(2) }); }
+    if (justStarted) { justStarted = false; seekLag = clamp(seekLag - off / fps, 0.02, 1.5); }   // Startverzögerung lernen
+    win = win.concat(off).slice(-5); const mean = win.reduce((x, y) => x + y, 0) / win.length;
+    if (Math.abs(off) > 12 && performance.now() - lastSeek > 700) {                              // grob daneben → einmal springen
+      r.resync++; ev('nachsync', { shot: cur.nr, off: +off.toFixed(2), lag: +seekLag.toFixed(2) }); startB(aT);
+    } else {
+      const gain = synced ? 0.05 : 0.08;
+      const rate = Math.abs(mean) < 0.35 ? 1 : 1 - clamp(mean * gain, -0.3, 0.3);
+      if (Math.abs(B.playbackRate - rate) > 0.005) B.playbackRate = rate;
+      synced = synced ? Math.abs(mean) <= 2 : (win.length >= 3 && Math.abs(mean) <= 1);
+    }
+    const inShot = aT >= vIn(cur) && aT < vOut(cur);
+    if (inShot) {
+      r.total++;
+      if (synced) {
+        if (r.start == null) r.start = off;
+        r.n++; r.sum += off; r.max = Math.max(r.max, Math.abs(off)); if (Math.abs(off) <= 1.05) r.ok++; if (Math.abs(off) < 0.5) r.exact++;
+      }
+    }
+    $('live').textContent = `Shot ${cur.nr} · ${off >= 0 ? '+' : ''}${fmt(off)} Bild${synced ? '' : ' (versteckt)'}`;
   }
   B.requestVideoFrameCallback(onB);
 }
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 B.requestVideoFrameCallback(onB);
 
 function render() {
   const tb = $('tbl').tBodies[0]; tb.innerHTML = '';
-  let all = 0, ok = 0, ex = 0, worst = 0, rs = 0;
+  let all = 0, ok = 0, ex = 0, worst = 0, rs = 0, tot = 0;
   for (const s of tests) {
     const r = R.get(s.id); const tr = tb.insertRow();
     const pct = r && r.n ? 100 * r.ok / r.n : null;
-    if (r && r.n) { all += r.n; ok += r.ok; ex += r.exact; worst = Math.max(worst, r.max); rs += r.resync; }
+    if (r) tot += r.total || 0; if (r && r.n) { all += r.n; ok += r.ok; ex += r.exact; worst = Math.max(worst, r.max); rs += r.resync; }
     tr.innerHTML = `<td>${s.nr}</td><td>${s.clip}</td><td>${r ? r.n : 0}</td><td>${r && r.n ? fmt(r.sum / r.n) : '–'}</td>
       <td>${r && r.n ? fmt(r.max) : '–'}</td><td class="${pct == null ? '' : pct >= 95 ? 'ok' : 'bad'}">${pct == null ? '–' : fmt(pct, 0) + ' %'}</td><td>${r && r.n ? fmt(100 * r.exact / r.n, 0) + ' %' : '–'}</td>
-      <td>${r && r.start != null ? fmt(r.start) : '–'}</td><td>${r ? r.resync : 0}</td>`;
+      <td>${r && r.total ? fmt(100 * r.n / r.total, 0) + ' %' : '–'}</td><td>${r ? r.resync : 0}</td>`;
   }
   if (all) {
     const p = 100 * ok / all;
-    $('verdict').innerHTML = p >= 95 && worst <= 2.05
-      ? `<span style="color:var(--g)">Bestanden:</span> ${fmt(p, 1)} % der Bilder ≤ 1 Bild Versatz (max ${fmt(worst)}), bildgenau ${fmt(100 * ex / all, 1)} %, ${rs} × nachsynchronisiert.`
-      : `<span style="color:var(--r)">Nicht sauber:</span> nur ${fmt(p, 1)} % ≤ 1 Bild (max ${fmt(worst)}) → Vorschau „näherungsweise“, Rückfall „Im Zusammenhang spielen“.`;
+    const cov = tot ? 100 * all / tot : 0;
+    $('verdict').innerHTML = p >= 95 && worst <= 2.05 && cov >= 85
+      ? `<span style="color:var(--g)">Bestanden:</span> ${fmt(p, 1)} % der Proxy-Bilder ≤ 1 Bild Versatz (max ${fmt(worst)}), bildgenau ${fmt(100 * ex / all, 1)} %, Proxy sichtbar ${fmt(cov, 0)} % der Shot-Zeit, ${rs} × nachsynchronisiert.`
+      : `<span style="color:var(--r)">Nicht sauber:</span> ${fmt(p, 1)} % ≤ 1 Bild (max ${fmt(worst)}), Proxy sichtbar ${fmt(cov, 0)} % → Vorschau „näherungsweise“, Rückfall „Im Zusammenhang spielen“.`;
   }
 }
 
@@ -212,7 +232,7 @@ $('auto').onclick = async () => {
 $('copy').onclick = async () => {
   const out = { ua: navigator.userAgent, version: ver && ver.version_id, zeit: new Date().toISOString(), verdict: $('verdict').textContent,
     shots: [...R.values()].map((r) => ({ nr: r.s.nr, clip: r.s.clip, n: r.n, avg: r.n ? +(r.sum / r.n).toFixed(2) : null, max: +r.max.toFixed(2),
-      ok_pct: r.n ? +(100 * r.ok / r.n).toFixed(1) : null, exakt_pct: r.n ? +(100 * r.exact / r.n).toFixed(1) : null, start: r.start == null ? null : +r.start.toFixed(2), resync: r.resync })), ereignisse: EV };
+      ok_pct: r.n ? +(100 * r.ok / r.n).toFixed(1) : null, exakt_pct: r.n ? +(100 * r.exact / r.n).toFixed(1) : null, sichtbar_pct: r.total ? +(100 * r.n / r.total).toFixed(0) : null, resync: r.resync })), ereignisse: EV };
   const txt = JSON.stringify(out, null, 1);
   try { await navigator.clipboard.writeText(txt); $('copy').textContent = 'Kopiert ✓'; }
   catch { const f = new File([txt], 'sync_test.json', { type: 'application/json' }); if (navigator.share) navigator.share({ files: [f] }); }
