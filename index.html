@@ -38,6 +38,10 @@
         <input id="importInput" type="file" multiple accept=".json,.mp4,.jpg,application/json,video/mp4,image/jpeg">
         <span>＋ Projekt importieren</span>
       </label>
+      <label class="import-btn">
+        <input id="versionInput" type="file" accept="video/*,.mp4,.mov">
+        <span>🎬 Schnittversion prüfen</span>
+      </label>
       <button id="btnDir" class="import-btn hidden">📁 Projektordner öffnen (PC)</button>
       <label class="import-btn">
         <input id="homeOpenInput" type="file" accept=".json,application/json">
@@ -72,6 +76,7 @@
         <div id="noClip" class="no-clip">Keine Aufnahme an dieser Stelle</div>
         <div id="hud" class="hud"></div>
         <pre id="liveLog" class="live-log hidden"></pre>
+        <div id="countdown" class="countdown hidden"></div>
       </div>
       <div class="transport">
         <button data-act="prevClip" title="Vorheriger Clip">⏮</button>
@@ -85,6 +90,7 @@
         <button data-act="in" class="mark" title="In-Punkt (I)">IN</button>
         <button data-act="out" class="mark" title="Out-Punkt (O)">OUT</button>
         <button data-act="marker" title="Marker an dieser Stelle (M)">⚑</button>
+        <button data-act="cutmode" title="Cut-Takt">✂</button>
         <button data-act="rec" class="rec" title="Sprachnotiz (N)">🎙</button>
         <button data-act="mute" title="Ton an/aus">🔊</button>
       </div>
@@ -110,6 +116,13 @@
     <button data-act="rec" class="glass big rec" title="Sprachnotiz">🎙</button>
     <button data-act="more" class="glass" title="Alle Knöpfe ein-/ausklappen">•••</button>
     <button data-act="play" class="glass big play-big">▶</button>
+  </div>
+
+  <!-- Cut-Takt: großes ✂, rechts daneben Stopp -->
+  <div id="cutbar" class="cutbar hidden">
+    <button data-act="cutmode" class="glass" title="Cut-Takt schließen">Fertig</button>
+    <button id="btnCut" class="cut-btn" title="Schnitt (C)">✂</button>
+    <button data-act="cutstop" class="cut-stop" title="Aufnahme stoppen (V)">■</button>
   </div>
 
   <div class="tl-wrap">

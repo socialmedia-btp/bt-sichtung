@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v3.1';
+const APP_VERSION = 'v3.2';
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
 
@@ -92,6 +92,8 @@ const S = {
   playing: false,
   muted: false,
 };
+const CUT = { mode: false, rec: null, countdown: null };
+const TAKE_H = 24; // Höhe einer Cut-Take-Zeile in der Timeline
 
 /* ---------- Projekte ---------- */
 async function showHome() {
@@ -185,6 +187,7 @@ async function openProject(id) {
   S.urls.clear(); S.sprites.clear();
   S.tracks = p.meta.tracks.map((t, i) => ({ ...t, color: TRACK_COLORS[i % TRACK_COLORS.length] }));
   S.state = (await DB.get('state', id)) || { selections: [], offsets: {}, activeTrack: null, T: null, pps: 20 };
+  S.state.takes = S.state.takes || [];
   S.clips = p.meta.clips.map((c) => ({ ...c, s0: isoToSec(c.start) }));
   S.byId = new Map(S.clips.map((c) => [c.id, c]));
   applyOffsets();
@@ -418,6 +421,7 @@ function stopPlay() {
   clearInterval(S.playTimer); clearTimeout(S.switchTimer); video.removeEventListener('seeked', resumeAfterSwitch);
   S.switching = false; video.pause(); save();
   log('stop', vstate());
+  if (CUT.rec) setTimeout(stopCutRec, 0);
 }
 function resumeAfterSwitch() {
   clearTimeout(S.switchTimer); video.removeEventListener('seeked', resumeAfterSwitch);
@@ -523,10 +527,60 @@ async function deleteSel(s) {
 }
 function changed() { S.rev = (S.rev || 0) + 1; save(); renderSide(); requestDraw(); markSaved(false); recordHistory(); }
 
+/* ---------- Cut-Takt ----------
+ * Schnittversion abspielen und bei jedem gewünschten Schnitt ✂ tippen. Jede Aufnahme = Take.
+ * Ein neuerer Take ersetzt in seinem Zeitbereich die Cuts älterer Takes. */
+function toggleCutMode(on = !CUT.mode) {
+  if (!on) stopCutRec();
+  CUT.mode = on; $('cutbar').classList.toggle('hidden', !on);
+  log('cutmodus', { an: on });
+  if (on) toast('✂ = Start nach 3-2-1, dann bei jedem Schnitt ✂ tippen · ■ beendet', 4000);
+  requestDraw();
+}
+function cutNow() { const c = S.byId.get(video.dataset.cid); return c && S.playing ? c.s + video.currentTime : S.T; }
+function cutTap() {
+  if (CUT.countdown) return;
+  if (!CUT.rec) { startCutCountdown(); return; }
+  const tNow = cutNow(); CUT.rec.cuts.push(tNow);
+  log('cut', { pos: +tNow.toFixed(3) });
+  const b = $('btnCut'); b.classList.remove('hit'); void b.offsetWidth; b.classList.add('hit');
+  requestDraw();
+}
+function startCutCountdown() {
+  stopPlay();
+  let n = 3; const el = $('countdown'); el.textContent = n; el.classList.remove('hidden');
+  log('cut-countdown', { pos: +S.T.toFixed(3) });
+  CUT.countdown = setInterval(() => {
+    n--; if (n > 0) { el.textContent = n; return; }
+    clearInterval(CUT.countdown); CUT.countdown = null; el.classList.add('hidden');
+    CUT.rec = { id: uid(), start: S.T, cuts: [], created: Date.now() };
+    $('cutbar').classList.add('recording'); play(); requestDraw();
+  }, 800);
+}
+function stopCutRec() {
+  if (CUT.countdown) { clearInterval(CUT.countdown); CUT.countdown = null; $('countdown').classList.add('hidden'); return; }
+  if (!CUT.rec) return;
+  const take = { ...CUT.rec, end: S.T }; CUT.rec = null; $('cutbar').classList.remove('recording');
+  stopPlay();
+  if (take.end - take.start < 0.3) { toast('Aufnahme zu kurz – verworfen'); requestDraw(); return; }
+  S.state.takes.push(take); S.selTake = take.id;
+  log('cut-take', { cuts: take.cuts.length, von: +take.start.toFixed(2), bis: +take.end.toFixed(2) });
+  changed(); toast(`${take.cuts.length} Cuts aufgenommen – Take antippen, ✕ löscht`);
+}
+function effectiveCuts() {
+  let cuts = [];
+  for (const tk of [...(S.state.takes || [])].sort((a, b) => a.created - b.created)) {
+    cuts = cuts.filter((c) => c.t < tk.start || c.t > tk.end);
+    cuts.push(...tk.cuts.map((ct) => ({ t: ct, take: tk.id })));
+  }
+  return cuts.sort((a, b) => a.t - b.t);
+}
+function deleteTake(id) { S.state.takes = S.state.takes.filter((x) => x.id !== id); S.selTake = null; log('take-geloescht', { id }); changed(); }
+
 /* ---------- Rückgängig / Wiederholen ----------
  * Nach jeder Änderung wird der Stand (Auswahl + Versatz) verglichen; Unterschiede kommen auf den Stapel. */
 const UNDO = []; const REDO = []; let lastSnap = null;
-const snapState = () => JSON.stringify({ sel: S.state.selections, off: S.state.offsets });
+const snapState = () => JSON.stringify({ sel: S.state.selections, off: S.state.offsets, takes: S.state.takes || [] });
 function resetHistory() { UNDO.length = 0; REDO.length = 0; lastSnap = snapState(); updateUndoBtns(); }
 function recordHistory() {
   const now = snapState();
@@ -536,7 +590,7 @@ function recordHistory() {
 function restoreSnap(js) {
   const d = JSON.parse(js);
   const keep = S.curSel && S.curSel.id;
-  S.state.selections = d.sel; S.state.offsets = d.off; lastSnap = js;
+  S.state.selections = d.sel; S.state.offsets = d.off; S.state.takes = d.takes || []; lastSnap = js;
   S.curSel = sels().find((x) => x.id === keep) || null;
   applyOffsets(); save(); renderSide(); requestDraw(); markSaved(false); showFrame(true); updateUndoBtns();
 }
@@ -693,8 +747,10 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 function laneGeom() {
   const h = cv.height / (window.devicePixelRatio || 1);
-  const lh = Math.max(34, Math.min(70, (h - RULER - 6) / S.tracks.length));
-  return { lh, y: (i) => RULER + 4 + i * lh };
+  const nt = ((S.state && S.state.takes) ? S.state.takes.length : 0) + (CUT.rec ? 1 : 0);
+  const lh = Math.max(30, Math.min(70, (h - RULER - 6 - nt * TAKE_H) / S.tracks.length));
+  const base = RULER + 4 + S.tracks.length * lh;
+  return { lh, y: (i) => RULER + 4 + i * lh, ty: (k) => base + k * TAKE_H, nt };
 }
 const W = () => cv.width / (window.devicePixelRatio || 1);
 // Beim Ziehen eines In/Out-Griffs bleibt die Ansicht stehen (viewLock), sonst läuft sie mit dem Playhead
@@ -804,6 +860,29 @@ function draw() {
     }
   }
 
+  // Cut-Takes: eine Zeile je Aufnahme mit gelben Strichen; gültige Cuts zusätzlich als feine Linie über die Spuren
+  {
+    const G = laneGeom(); S.xbox = null;
+    const takes = [...(S.state.takes || [])]; if (CUT.rec) takes.push({ ...CUT.rec, end: S.T, live: true });
+    const eff = new Set(effectiveCuts().map((c) => c.take + ':' + c.t));
+    takes.forEach((tk, k) => {
+      const yy = G.ty(k), x0 = xOf(tk.start), x1 = xOf(tk.end), sel = tk.id === S.selTake;
+      ctx.fillStyle = sel ? 'rgba(242,193,78,0.25)' : 'rgba(255,255,255,0.07)'; ctx.fillRect(x0, yy + 1, Math.max(2, x1 - x0), TAKE_H - 3);
+      if (tk.live) { ctx.strokeStyle = '#ff453a'; ctx.lineWidth = 2; ctx.strokeRect(x0, yy + 1, Math.max(2, x1 - x0), TAKE_H - 3); }
+      for (const ct of tk.cuts) {
+        const x = xOf(ct); const on = tk.live || eff.has(tk.id + ':' + ct);
+        ctx.fillStyle = on ? '#f2c14e' : 'rgba(242,193,78,0.28)'; ctx.fillRect(x - 1.25, yy + 2, 2.5, TAKE_H - 5);
+        if (on) { ctx.fillStyle = 'rgba(242,193,78,0.5)'; ctx.fillRect(x - 0.75, RULER, 1.5, G.ty(0) - RULER); }
+      }
+      if (sel) { // ✕ rechts oben im gewählten Take = löschen
+        const bx = Math.min(x1, w - 4) - 26, by = yy + 1;
+        ctx.fillStyle = '#ff453a'; ctx.beginPath(); roundRect(bx, by, 24, TAKE_H - 3, 5); ctx.fill();
+        ctx.fillStyle = '#fff'; ctx.font = '700 13px sans-serif'; ctx.fillText('✕', bx + 6, by + 15);
+        S.xbox = { id: tk.id, box: [bx, by, 24, TAKE_H - 3] };
+      }
+    });
+  }
+
   // Lücken
   for (const g of S.axis.gaps) {
     const x = cx + ((g.d0 + g.d1) / 2 - dNow) * S.pps; if (x < HEAD - 40 || x > w + 40) continue;
@@ -842,6 +921,13 @@ function draw() {
   });
   if (!FS) { ctx.fillStyle = '#1a1c1f'; ctx.fillRect(0, 0, HEAD - 4, RULER); }
   ctx.fillStyle = '#8b9098'; ctx.font = '10px sans-serif'; ctx.fillText('Spuren', 10, 16);
+  { const G = laneGeom(); const n = (S.state.takes || []).length + (CUT.rec ? 1 : 0);
+    for (let k = 0; k < n; k++) {
+      const live = CUT.rec && k === n - 1;
+      ctx.fillStyle = FS ? 'rgba(0,0,0,0.45)' : '#1a1c1f'; ctx.fillRect(0, G.ty(k) + 1, HEAD - 4, TAKE_H - 3);
+      ctx.fillStyle = live ? '#ff453a' : '#f2c14e'; ctx.font = '600 11px -apple-system, Segoe UI, sans-serif';
+      ctx.fillText(live ? '● Aufnahme' : `✂ Take ${k + 1}`, 8, G.ty(k) + 16);
+    } }
 
   // Playhead
   const px = cx + (r2d(S.T) - dNow) * S.pps;
@@ -866,7 +952,14 @@ function wrapText(t, x, y, maxW, lh) {
 const ptrs = new Map();
 let g = null; // aktuelle Geste
 function hit(x, y) {
-  const { lh, y: ly } = laneGeom();
+  const G = laneGeom();
+  if (G.nt && y >= G.ty(0)) {
+    const tk = (S.state.takes || [])[Math.floor((y - G.ty(0)) / TAKE_H)];
+    if (!tk) return { type: 'empty' };
+    if (S.xbox && S.xbox.id === tk.id) { const [bx, , bw] = S.xbox.box; if (x >= bx - 8 && x <= bx + bw + 8) return { type: 'takex', take: tk }; }
+    return { type: 'take', take: tk };
+  }
+  const { lh, y: ly } = G;
   const ti = Math.floor((y - RULER - 4) / lh);
   const track = S.tracks[ti];
   if (x < HEAD) return { type: 'head', track };
@@ -966,7 +1059,7 @@ cv.addEventListener('pointermove', (e) => {
     showHandleFrame(); if (g.fine) updateLoupe();
     requestDraw(); return;
   }
-  if (g.type === 'lane' || g.type === 'sel' || g.type === 'empty' || g.type === 'head') {
+  if (g.type === 'lane' || g.type === 'sel' || g.type === 'empty' || g.type === 'head' || g.type === 'take' || g.type === 'takex') {
     if (!g.moved) return;
     S.T = d2r(clamp(g.dT - dx / S.pps, -1, S.axis.total + 1));
     showFrame(false); requestDraw();
@@ -991,6 +1084,11 @@ function endPointer(e) {
   if (!g.lpDone) $('loupe').classList.add('hidden');
   viewLock = null;
   if (g.lpDone) { g = null; requestDraw(); return; }
+  if (!g.moved && !g.fine && (g.type === 'take' || g.type === 'takex')) {
+    if (g.type === 'takex') deleteTake(g.take.id);
+    else { S.selTake = S.selTake === g.take.id ? null : g.take.id; log('take-gewaehlt', { id: S.selTake }); }
+    g = null; requestDraw(); return;
+  }
   if (!g.moved && !g.fine) {
     if (g.type === 'head' && g.track) offsetDialog(g.track);
     else if (g.type === 'sel' || g.type === 'handle') { S.curSel = g.s; S.activeTrack = g.track.id; }
@@ -1068,6 +1166,13 @@ async function buildExport() {
     });
   }
   if (missingAudio) { log('export-audio-fehlt', { n: missingAudio }); toast(`${missingAudio} Sprachnotiz(en) ohne Audio – steht im Log`, 3500); }
+  // Cut-Takt: Zeiten relativ zum Anfang (Schnittversion) bzw. als Uhrzeit (Footage-Projekt)
+  const isVersion = S.proj.meta.kind === 'version'; const base = isVersion ? S.clips[0].s : 0;
+  const fps = isVersion ? S.clips[0].fps : 25;
+  const rel = (x) => +(isVersion ? x - base : ((x % 86400) + 86400) % 86400).toFixed(3);
+  out.kind = S.proj.meta.kind || 'footage';
+  out.takes = JSON.parse(JSON.stringify(S.state.takes || [])).map((tk) => ({ id: tk.id, start: rel(tk.start), end: rel(tk.end), created: new Date(tk.created).toISOString(), cuts: tk.cuts.map(rel) }));
+  out.cuts = effectiveCuts().map((c) => ({ t: rel(c.t), frame: Math.round(rel(c.t) * fps), tc: clock(rel(c.t), fps), take: c.take }));
   return out;
 }
 /* Speichern = Datei mit dem ganzen Arbeitsstand (Auswahl, Marker, Notizen, Versatz, Position).
@@ -1157,6 +1262,10 @@ async function loadSelection(d) {
     else skipped++;
   }
   S.state.selections = list; S.state.offsets = d.offsets || {};
+  if (Array.isArray(d.takes)) {
+    const base = S.proj.meta.kind === 'version' ? S.clips[0].s0 : (S.clips[0].s0 - (((S.clips[0].s0 % 86400) + 86400) % 86400));
+    S.state.takes = d.takes.map((tk) => ({ id: tk.id, start: base + tk.start, end: base + tk.end, created: Date.parse(tk.created) || Date.now(), cuts: tk.cuts.map((x) => base + x) }));
+  }
   applyOffsets(); S.curSel = null;
   if (d.view) { S.T = d.view.T ?? S.T; S.activeTrack = d.view.activeTrack || S.activeTrack; S.pps = d.view.pps || S.pps; }
   closeModal(); changed(); showFrame(true); markSaved(true);
@@ -1175,6 +1284,7 @@ function help() {
     <li><b>Spurname antippen</b> = Spur verschieben, falls die Kamera-Uhr falsch ging.</li>
     <li>Lücken ohne Aufnahme sind auf 2 s gekürzt (gestrichelt, mit echter Dauer).</li>
     <li><b>Lange auf die Timeline oder aufs Video drücken</b> = IN am Abspielzeiger, nochmal lange drücken = OUT. Beliebig viele Stellen pro Clip; alles außerhalb wird ausgegraut. Lange auf einen gelben Rand drücken = Lupe zum Feinjustieren.</li>
+    <li><b>Schnittversion prüfen</b> (Startseite): ein fertiges Video laden. <b>✂</b> in der Leiste öffnet den Cut-Takt: großes ✂ startet nach 3-2-1, dann bei jedem Schnitt ✂ tippen, rotes ■ beendet. Jede Aufnahme ist ein Take (gelbe Striche); neuere Takes ersetzen ältere in ihrem Bereich. Take antippen → ✕ löscht. Am PC: C = Schnitt, V = Stopp.</li>
     <li>Die Zeile <b>„🎙 Notiz zu …“</b> zeigt immer, wohin die nächste Sprachnotiz geht. Eintrag in der Shortlist oder auf der Timeline antippen = auswählen.</li>
     <li><b>↶</b> oben rechts = Rückgängig (auch Löschen), <b>↷</b> = Wiederholen.</li>
     <li><b>⛶ Vollbild</b>: Video bildschirmfüllend, Timeline durchsichtig darüber. <b>•••</b> klappt die Knöpfe aus. Aufs Video tippen = Play/Pause.</li>
@@ -1202,6 +1312,8 @@ const ACT = {
   mute: () => { S.muted = !S.muted; video.muted = S.muted; updateMute(); },
   undo, redo,
   fs: () => toggleFS(),
+  cutmode: () => toggleCutMode(),
+  cutstop: () => stopCutRec(),
   more: () => document.body.classList.toggle('fs-open'),
 };
 function updateMute() { document.querySelectorAll('[data-act=mute]').forEach((b) => { b.textContent = S.muted ? '🔇' : '🔊'; }); }
@@ -1221,6 +1333,8 @@ $('videoWrap').addEventListener('pointerup', (e) => {
 });
 $('videoWrap').addEventListener('pointercancel', () => { if (vPress) clearTimeout(vPress.timer); vPress = null; });
 $('videoWrap').addEventListener('contextmenu', (e) => e.preventDefault());
+// ✂ reagiert schon beim Berühren (nicht erst beim Loslassen) – sonst hinkt der Takt hinterher
+$('btnCut').addEventListener('pointerdown', (e) => { e.preventDefault(); cutTap(); });
 
 /* ---------- Vollbild ---------- */
 function toggleFS(on = !S.fs) {
@@ -1267,6 +1381,8 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'z' && (e.ctrlKey || e.metaKey)) (e.shiftKey ? redo() : undo());
   else if (k === 'y' && (e.ctrlKey || e.metaKey)) redo();
   else if (k === 'f') toggleFS();
+  else if (k === 'c' && CUT.mode) cutTap();
+  else if (k === 'v' && CUT.mode) stopCutRec();
   else if (k === 'escape' && S.fs) toggleFS(false);
   else if (k === 'i') ACT.in(); else if (k === 'o') ACT.out(); else if (k === 'm') ACT.marker(); else if (k === 'n') ACT.rec();
   else if (k === 'arrowup') { const i = S.tracks.findIndex((t) => t.id === S.activeTrack); S.activeTrack = S.tracks[Math.max(0, i - 1)].id; showFrame(true); requestDraw(); }
@@ -1280,6 +1396,29 @@ $('openInput').onchange = (e) => { if (e.target.files[0]) openSaveFile(e.target.
 $('homeOpenInput').onchange = (e) => { if (e.target.files[0]) openSaveFileFromHome(e.target.files[0]); e.target.value = ''; };
 $('btnHelp').onclick = help; $('btnHelp2').onclick = help;
 $('importInput').onchange = (e) => { if (e.target.files.length) importFiles(e.target.files); e.target.value = ''; };
+$('versionInput').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importVersion(f); };
+// Schnittversion = ein fertiges/halbfertiges Video als eigenes Projekt (eine Spur), zum Prüfen und Cut-Takt-Tippen
+async function importVersion(f) {
+  const name = f.name.replace(/\.[^.]+$/, '');
+  modal(`<h2>Importiere ${esc(name)}</h2><p class="hint">Video wird auf das Gerät kopiert …</p>`);
+  const blob = new Blob([await f.arrayBuffer()], { type: f.type || 'video/mp4' });
+  const dur = await new Promise((res) => {
+    const v = document.createElement('video'); v.preload = 'metadata'; v.muted = true;
+    v.onloadedmetadata = () => res(v.duration); v.onerror = () => res(0); v.src = URL.createObjectURL(blob);
+  });
+  if (!dur || !isFinite(dur)) { closeModal(); toast('Video lässt sich nicht lesen (Format?)'); log('version-fehler', { name }); return; }
+  const ext = (f.name.match(/\.[^.]+$/) || ['.mp4'])[0].toLowerCase();
+  const meta = { format: 'bt-sichtung', version: 1, kind: 'version', name, created: new Date().toISOString().slice(0, 19),
+    tracks: [{ id: 'VERSION', label: 'Schnittversion' }],
+    clips: [{ id: 'version', track: 'VERSION', name: f.name, file: 'version' + ext, sprite: 'version.jpg', spriteN: 1, spriteStep: dur,
+      start: '2000-01-01T00:00:00.000', dur, fps: 25, original: f.name }] };
+  const same = (await DB.all('projects')).find((x) => x.meta.name === name);
+  const id = same ? same.id : name + '|' + meta.created;
+  await DB.put('files', blob, id + '/' + meta.clips[0].file);
+  await DB.put('projects', { id, meta, bytes: blob.size, missing: 0, opened: Date.now() });
+  log('version-import', { name, dauer: +dur.toFixed(2), mb: +(blob.size / 1e6).toFixed(1) });
+  closeModal(); await showHome(); openProject(id);
+}
 
 /* ---------- PC (Chrome/Edge): Projektordner direkt öffnen, Stand-Datei liegt im Ordner ----------
  * iPad-Safari kann nicht in Ordner schreiben → dort bleibt Speichern über „Teilen“. */
