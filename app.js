@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.3';
+const APP_VERSION = 'v4.4';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -275,6 +275,7 @@ function versionClip(ver) {
 }
 async function enterContext(tab, versionId) {
   if (rec || recStarting) { toast('Erst die Sprachnotiz beenden'); return false; }
+  if (typeof SL !== 'undefined' && SL) slipClose();
   if (tab !== 'edit' && !S.footClips.length) { // Kunden-Projekt: es gibt keine Shortlist
     const v = S.ps.versions[S.ps.versions.length - 1]; if (!v) return false;
     tab = 'edit'; versionId = versionId || v.version_id;
@@ -335,7 +336,8 @@ function visibleShots(m) {
 const shotAt = (sec) => { sec += 1e-4; return (S.vsegs || []).find((x) => sec >= x.a && sec < x.b) || null; };
 function renderTabs() {
   document.querySelectorAll('#tabs [data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === S.ps.tab));
-  $('verName').textContent = S.ver ? verLabel(S.ver) : (S.ps.versions.length ? '' : '＋');
+  const av = S.ps.versions.find((v) => v.version_id === S.ps.activeVersion);
+  $('verName').textContent = S.ver ? 'Version ' + verLabel(S.ver) : av ? 'Version ' + verLabel(av) : S.ps.versions.length ? 'Versionen' : '＋ Version';
 }
 const verLabel = (v) => (v.manifest.sequenz.match(/v\d+\w*$/i) || [v.manifest.sequenz])[0];
 
@@ -806,7 +808,12 @@ function renderSide() {
   const list = $('selList');
   const all = [...sels()].sort((a, b) => selRange(a)[0] - selRange(b)[0]);
   $('selCount').textContent = `${all.filter((s) => s.kind === 'range').length} ${isVersionView() ? 'Bereiche' : 'Clips'} · ${all.filter((s) => s.kind === 'marker').length} Marker`;
-  list.innerHTML = '';
+  list.innerHTML = changesHtml();
+  list.querySelectorAll('.chg').forEach((el) => el.onclick = () => {
+    const sg = S.vsegs.find((x) => x.shot.id === el.dataset.shot); if (!sg) return;
+    stopPlay(); S.curSel = null; S.T = S.clips[0].s + sg.a; showFrame(true); renderSide(); requestDraw();
+  });
+  if (list.innerHTML && all.length) list.insertAdjacentHTML('beforeend', '<div class="list-sub">Kommentare</div>');
   for (const s of all) {
     const L = selLabel(s);
     const el = document.createElement('div');
@@ -873,7 +880,8 @@ function renderShotCard(box) {
   box.innerHTML = `<div class="card-title"><span class="dot" style="background:${sh.editierbar ? '#4c9aff' : '#6b6f76'}"></span>
       <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Shot ${sh.nr} · ${esc(shotName(sh))}</span></div>
     <div class="card-row"><span class="val">${clock(sh.v_in / fps, fps)} – ${clock(sh.v_out / fps, fps)} · ${durTxt((sh.v_out - sh.v_in) / fps)}</span></div>
-    <div class="hint" style="margin:2px 0 4px">${sh.editierbar ? 'Änderbar (Inhalt verschieben / tauschen folgt)' : 'Gesperrt: ' + esc(sh.grund || '') + ' – kommentierbar'}</div>
+    <div class="hint" style="margin:2px 0 4px">${sh.editierbar ? 'Änderbar' : 'Gesperrt: ' + esc(sh.grund || '') + ' – kommentierbar'}</div>
+    ${slipCardHtml(sh)}
     <div class="card-row stars">${[1, 2, 3].map((n) => `<button data-r="${n}" class="${w !== 'rot' && w >= n ? 'on' : ''}" title="${n} Stern${n > 1 ? 'e' : ''} (Taste ${n})">★</button>`).join('')}
       <button data-r="rot" class="rot${w === 'rot' ? ' on' : ''}" title="Muss auf jeden Fall raus (Taste X)">✕ Muss raus</button></div>
     <div class="hint">★ brauchbar · ★★ gut · ★★★ Favorit · <b>Muss raus</b> = darf auf keinen Fall drin bleiben (wird nur markiert). Ohne Bewertung = noch offen.</div>
@@ -882,6 +890,7 @@ function renderShotCard(box) {
       <button data-pn="${i}">▶</button><button data-dn="${i}" class="ghost danger">✕</button></div>`).join('')}
       <button data-k="rec" class="rec-scene">🎙 Sprachnotiz zu dieser Szene</button></div>`;
   box.querySelectorAll('[data-r]').forEach((x) => x.onclick = () => rateShot(x.dataset.r === 'rot' ? 'rot' : +x.dataset.r));
+  slipCardBind(box, sh);
   const ti = box.querySelector('#shotText');
   ti.oninput = (e) => { const m = shotComment(sh, true); m.text = e.target.value; save(); };
   ti.onchange = () => { const m = shotComment(sh); if (m && !m.text && !m.notes.length) S.state.selections = sels().filter((x) => x !== m); changed(); };
@@ -1237,6 +1246,11 @@ function drawShots(c, yy, hh, w) {
       if (b - a > 26) { ctx.font = '700 11px sans-serif'; ctx.fillText(bw.wert === 'rot' ? '✕' : '★'.repeat(bw.wert), Math.max(a, HEAD) + 5, yy + hh - 9); }
     }
     ctx.fillStyle = '#0b0b0d'; ctx.fillRect(a - 1, yy, 2, hh);
+    const az = effZiel(sh);
+    if (az) {
+      ctx.strokeStyle = '#f2c14e'; ctx.lineWidth = 2; ctx.strokeRect(a + 1, yy + 1, b - a - 2, hh - 2);
+      if (b - a > 40) { ctx.fillStyle = '#f2c14e'; ctx.font = '700 11px sans-serif'; ctx.fillText('✎ ' + deltaTxt(sh, az.src_in), Math.max(a, HEAD) + 5, yy + hh / 2 + 4); }
+    }
     if (b - a > 34) {
       ctx.save(); ctx.beginPath(); ctx.rect(a + 2, yy, b - a - 4, hh); ctx.clip();
       ctx.fillStyle = sh.editierbar ? '#fff' : '#9a9ea6'; ctx.font = '600 11px -apple-system, Segoe UI, sans-serif';
@@ -1539,7 +1553,8 @@ async function buildExport() {
     if (!(await DB.keys('files')).includes(v.file)) probleme.push(`${verLabel(v)}: Video fehlt auf diesem Gerät (Kommentare sind trotzdem gesichert)`);
     out.versionen.push({ version_id: v.version_id, export_id: v.export_id, sequenz: v.manifest.sequenz, datei: v.datei, fps: v.manifest.fps,
       timeline_fingerprint: v.manifest.timeline_fingerprint, importiert: new Date(v.imported).toISOString(),
-      ereignisse: v.ctx.ereignisse || [], kommentare: x.selections, takes: x.takes, cuts: x.cuts, bewertungen: shotRatings(v) });
+      ereignisse: v.ctx.ereignisse || [], auftraege: BTV.auftraege(v.manifest, v.ctx.ereignisse || []),
+      kommentare: x.selections, takes: x.takes, cuts: x.cuts, bewertungen: shotRatings(v) });
   }
   // Stände zu Versionen, die auf diesem Gerät (noch) nicht importiert sind, unverändert mitgeben – nichts geht verloren
   for (const w of Object.values(ps.wartend || {})) { out.versionen.push(w); probleme.push(`${w.sequenz || w.version_id}: nur Stand, Version auf diesem Gerät nicht importiert`); }
@@ -1761,7 +1776,7 @@ document.querySelectorAll('button[data-act]').forEach((b) => b.addEventListener(
 // Aufs Video tippen = Play/Pause
 let vPress = null;
 $('videoWrap').addEventListener('pointerdown', (e) => {
-  if (e.target.closest('button')) return;
+  if (e.target.closest('button') || (typeof SL !== 'undefined' && SL)) return;
   vPress = { x: e.clientX, y: e.clientY, long: false };
   vPress.timer = setTimeout(() => { if (vPress) { vPress.long = true; log('knopf', { act: 'video-lang' }); markAtPlayhead(); } }, MARK_LONGPRESS_MS);
 });
