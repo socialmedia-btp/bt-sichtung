@@ -229,7 +229,7 @@ body.fs .reel-bar { top: max(12px, var(--safe-t)); }
 /* v4.4 Inhalt verschieben (Slip) + Proxy-Vorschau */
 .pv { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: transparent; pointer-events: none; opacity: 0; z-index: 1; }
 body.slip .pv { opacity: 1; }
-#pvLastWrap { position: absolute; right: 10px; bottom: 10px; width: 26%; z-index: 2; pointer-events: none; }
+#pvLastWrap { position: absolute; right: 10px; bottom: 10px; width: 30%; z-index: 2; pointer-events: none; }
 .pv-last { width: 100%; border: 2px solid #f2c14e; border-radius: 8px; background: #000; display: block; }
 #pvLastWrap::before { content: 'letztes Bild'; position: absolute; left: 6px; top: 4px; font-size: 11px; color: #fff; text-shadow: 0 1px 3px #000; z-index: 1; }
 #pvLastWrap:has(.hidden) { display: none; }
@@ -241,10 +241,13 @@ body.slip .pv { opacity: 1; }
 #slipCv { width: 100%; height: 96px; touch-action: none; border-radius: 10px; cursor: ew-resize; }
 .slip-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .slip-row button { min-height: 52px; min-width: 64px; font-size: 16px; }
-body.slip .transport, body.slip .tl-wrap, body.slip .tc { pointer-events: none; opacity: .45; }
+body.slip .transport, body.slip .tc { pointer-events: none; opacity: .45; }
+body.slip .tl-wrap { display: none; }   /* Verschiebe-Modus: Timeline gesperrt → Platz fürs Vorschaubild */
 body.slip .fs-mini, body.slip .cutbar { display: none !important; }
 .change { color: var(--sel); font-weight: 600; margin: 6px 0 2px; }
-.slip-btns button { flex: 1; min-height: 48px; }
+.slip-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.slip-btns button { min-height: 48px; padding: 6px 8px; font-size: 14px; white-space: nowrap; }
+.slip-btns .slip-go { grid-column: 1 / -1; }
 .slip-go { background: var(--sel) !important; color: #1a1400 !important; font-weight: 700; }
 .list-sub { padding: 8px 12px 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .sel-item.chg .l2 { white-space: normal; font-size: 12px; }

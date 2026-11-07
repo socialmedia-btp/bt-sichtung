@@ -93,7 +93,7 @@ async function startSlip() {
   if (sitzung !== SITZUNG || !SL) return;                          // inzwischen gewechselt
   pv.style.opacity = ''; pv.classList.remove('hidden'); pvLast.classList.remove('hidden'); $('pvBadge').classList.remove('hidden');
   log('slip-start', { shot: sh.id, src_in: SL.srcIn });
-  slipResize(); slipUpdate(true);
+  slipResize(); slipUpdate(true); resizeCanvas();
 }
 // auf das Raster „1 Sequenzbild“ rund um den ursprünglichen Start einrasten, innerhalb des Clips
 function slipSnap(v) {
@@ -163,7 +163,7 @@ function slipApply() {
 function slipClose() {
   SL = null; document.body.classList.remove('slip'); $('slipBar').classList.add('hidden');
   pvHide(); pvLast.classList.add('hidden'); $('pvBadge').classList.add('hidden');
-  renderSide(); requestDraw(); showFrame(true);
+  renderSide(); resizeCanvas(); showFrame(true);
 }
 function resetShot(sh) {
   S.state.ereignisse = S.state.ereignisse || [];
