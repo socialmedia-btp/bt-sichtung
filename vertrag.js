@@ -40,6 +40,7 @@
       nachher: { clip: z.clip, src_in: z.src_in, src_out: zOut, src_fps: z.src_fps, bereich: z.bereich || 'ganzer_clip' },
       tempo: 1.0, audio_policy: 'keep_version_audio', folgen: [...(shot.folgen || [])], pruefung: [],
     };
+    if (Array.isArray(z.bereich_frames)) a.nachher.bereich_frames = [...z.bereich_frames];   // Shortlist-Grenze geht mit (apply_edits prüft)
     if (typ === 'slip') {
       a.delta_src_frames = z.src_in - shot.src_in;
       a.delta_s = Math.round(a.delta_src_frames / shot.src_fps * 1e4) / 1e4;

@@ -251,3 +251,17 @@ body.slip .fs-mini, body.slip .cutbar { display: none !important; }
 .slip-go { background: var(--sel) !important; color: #1a1400 !important; font-weight: 700; }
 .list-sub { padding: 8px 12px 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .sel-item.chg .l2 { white-space: normal; font-size: 12px; }
+/* Clip tauschen (Blatt) */
+.ts-filter { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+.ts-filter input { flex: 1 1 180px; min-height: 40px; }
+.ts-tracks { display: flex; gap: 4px; flex-wrap: wrap; }
+.ts-tracks button { min-height: 36px; padding: 6px 12px; border-radius: 8px; }
+.ts-tracks button.on { background: var(--sel); color: #111; }
+.ts-list { max-height: 56vh; overflow: auto; border-radius: 12px; background: #0002; }
+.ts-item { display: flex; gap: 10px; align-items: center; padding: 8px 12px; border-bottom: 0.5px solid var(--line); cursor: pointer; min-height: 64px; }
+.ts-item:active { background: #ffffff10; }
+.ts-item.off { opacity: .4; cursor: default; }
+.ts-item .t { min-width: 0; flex: 1; }
+.ts-item .l1 { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ts-item .l2 { color: var(--muted); font-size: 13px; }
+.ts-th { width: 96px; height: 54px; flex: none; border-radius: 6px; background: #2a2e34 no-repeat; }
