@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.1b';
+const APP_VERSION = 'v4.2';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -130,7 +130,7 @@ async function showHome() {
     const el = document.createElement('div');
     el.className = 'proj';
     el.innerHTML = `<div class="info"><div class="name">${esc(p.meta.name)}</div>
-      <div class="meta">${p.meta.clips.length} Clips · ${fmtGB(p.bytes || 0)} · ${n} Auswahl${nv ? ` · ${nv} Version${nv > 1 ? 'en' : ''}` : ''}${p.missing ? ` · <span style="color:var(--red)">${p.missing} Dateien fehlen</span>` : ''}</div></div>
+      <div class="meta">${p.meta.kind === 'kunde' ? 'Video zum Prüfen' : `${p.meta.clips.length} Clips · ${fmtGB(p.bytes || 0)} · ${n} Auswahl`}${nv ? ` · ${nv} Version${nv > 1 ? 'en' : ''}` : ''}${p.missing ? ` · <span style="color:var(--red)">${p.missing} Dateien fehlen</span>` : ''}</div></div>
       <button class="primary">Öffnen</button><button class="ghost danger" title="Projekt vom Gerät löschen">✕</button>`;
     el.querySelector('.primary').onclick = () => openProject(p.id);
     el.querySelector('.danger').onclick = () => deleteProject(p);
@@ -232,10 +232,15 @@ async function openProject(id) {
     const sp = await DB.get('files', id + '/' + c.sprite);
     if (sp) { const img = new Image(); img.onload = requestDraw; img.src = URL.createObjectURL(sp); S.sprites.set(c.id, img); }
   }
-  $('home').classList.add('hidden'); $('editor').classList.remove('hidden');
   $('projTitle').textContent = p.meta.name;
-  $('tabs').classList.toggle('hidden', p.meta.kind === 'version');
-  const vOk = S.ps.tab === 'edit' && S.ps.versions.some((v) => v.version_id === S.ps.activeVersion);
+  $('tabs').classList.toggle('hidden', p.meta.kind === 'version' || p.meta.kind === 'kunde');
+  if (!S.footClips.length && !S.ps.versions.length) { // Kunden-Projekt, Version noch nicht (mehr) da
+    S.state = S.ps.shortlist; S.clips = []; S.byId = new Map(); markSaved(true);
+    versionSheet(); return;
+  }
+  $('home').classList.add('hidden'); $('editor').classList.remove('hidden');
+  let vOk = S.ps.tab === 'edit' && S.ps.versions.some((v) => v.version_id === S.ps.activeVersion);
+  if (!S.footClips.length && !vOk) { S.ps.activeVersion = S.ps.versions[S.ps.versions.length - 1].version_id; vOk = true; } // ohne Footage immer Edit
   await enterContext(vOk ? 'edit' : 'shortlist', vOk ? S.ps.activeVersion : null);
   markSaved(true); ensureStandFile(); bkRender();
   log('projekt-offen', { name: p.meta.name, clips: S.footClips.length, auswahl: S.ps.shortlist.selections.length, versionen: S.ps.versions.length, tab: S.ps.tab });
@@ -270,6 +275,11 @@ function versionClip(ver) {
 }
 async function enterContext(tab, versionId) {
   if (rec || recStarting) { toast('Erst die Sprachnotiz beenden'); return false; }
+  if (tab !== 'edit' && !S.footClips.length) { // Kunden-Projekt: es gibt keine Shortlist
+    const v = S.ps.versions[S.ps.versions.length - 1]; if (!v) return false;
+    tab = 'edit'; versionId = versionId || v.version_id;
+  }
+  $('home').classList.add('hidden'); $('editor').classList.remove('hidden');
   stopPlay(); endReel(); if (CUT.mode) toggleCutMode(false);
   if (S.state) { S.state.activeTrack = S.activeTrack; S.state.T = S.T; S.state.pps = S.pps; S.hist[ctxKey()] = { U: [...UNDO], R: [...REDO], last: lastSnap }; }
   const ver = tab === 'edit' ? S.ps.versions.find((v) => v.version_id === versionId) : null;
@@ -299,7 +309,7 @@ async function enterContext(tab, versionId) {
   renderTabs();
   $('listTitle').textContent = isVersionView() ? 'Kommentare' : 'Shortlist';
   log('kontext', { tab: S.ps.tab, version: ver ? ver.version_id : null });
-  resizeCanvas(); showFrame(true); renderSide(); save();
+  resizeCanvas(); showFrame(true); renderSide(); save(); bkRender();
 }
 // Sichtbarer Shot je Zeitpunkt = oberste Ebene; benachbarte Stücke desselben Shots zusammengefasst (Sekunden ab Versionsbeginn)
 function visibleShots(m) {
@@ -1428,7 +1438,8 @@ const blobToB64 = (b) => new Promise((res) => { const r = new FileReader(); r.on
 // Zeitabbildung Export ↔ Import, immer paarweise (F09): Versionen/Videos relativ zum Videobeginn, Footage-Takes relativ
 // zum Tagesbeginn des ersten Clips (nicht modulo 24 h – über Mitternacht bleibt der Tag erhalten)
 const dayBase = (s0) => s0 - (((s0 % 86400) + 86400) % 86400);
-const footView = (foot, legacy) => ({ clips: foot, isVersion: legacy, base: legacy ? foot[0].s0 : dayBase(foot[0].s0), fps: legacy ? foot[0].fps : 25 });
+const footView = (foot, legacy) => (!foot.length ? { clips: [], isVersion: false, base: 0, fps: 25 } // Kunden-Projekt ohne Footage
+  : { clips: foot, isVersion: legacy, base: legacy ? foot[0].s0 : dayBase(foot[0].s0), fps: legacy ? foot[0].fps : 25 });
 async function exportCtx(ctx, view, probleme, wo) {
   const byId = new Map(view.clips.map((c) => [c.id, c]));
   const at = (s) => (s.kind === 'marker' ? s.t : (byId.get(s.clipId) ? byId.get(s.clipId).s + s.inT : 0));
@@ -1797,7 +1808,33 @@ $('openInput').onchange = (e) => { if (e.target.files[0]) openSaveFile(e.target.
 $('homeOpenInput').onchange = (e) => { if (e.target.files[0]) openSaveFileFromHome(e.target.files[0]); e.target.value = ''; };
 $('btnHelp').onclick = help; $('btnHelp2').onclick = help;
 $('importInput').onchange = (e) => { if (e.target.files.length) importFiles(e.target.files); e.target.value = ''; };
-$('versionInput').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importVersion(f); };
+$('versionInput').onchange = (e) => {
+  const fs = [...e.target.files]; e.target.value = '';
+  // Video + .json (bt-version) = Version eines Projekts (auch ohne Footage, z. B. beim Kunden); nur Video = einfaches Prüf-Video
+  if (fs.some((f) => /\.json$/i.test(f.name))) importKundenVersion(fs);
+  else if (fs[0]) importVersion(fs[0]);
+};
+// Kunde hat nur Video + JSON: gehört die Version zu einem Projekt auf dem Gerät, dorthin; sonst ein Kunden-Projekt ohne Footage anlegen
+async function importKundenVersion(files) {
+  let m = null;
+  for (const f of files.filter((x) => /\.json$/i.test(x.name))) {
+    try { const d = JSON.parse(await f.text()); if (d.format === 'bt-version') { m = d; break; } } catch { /* nächste */ }
+  }
+  if (!m) { toast('In der Auswahl ist keine Versionsdatei (.json) – bitte Video und JSON zusammen auswählen', 5000); return; }
+  const mf = m.contract === 4 ? manifestFehler(m) : `Vertrag ${m.contract}`;
+  if (mf) { toast(`Versionsdatei ist fehlerhaft (${mf})`, 5000); return; }
+  let p = null;
+  for (const x of await DB.all('projects')) if ((await projPid(x)) === m.project_id) p = x;
+  if (!p) {
+    if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
+    p = { id: m.project_id, project_id: m.project_id, bytes: 0, missing: 0, opened: Date.now(),
+      meta: { format: 'bt-sichtung', version: 1, kind: 'kunde', name: m.projekt || m.sequenz, project_id: m.project_id, created: m.erstellt || '', tracks: [], clips: [] } };
+    await DB.put('projects', p);
+    log('kunden-projekt', { projekt: p.meta.name, pid: m.project_id });
+  }
+  await openProject(p.id);
+  await importVersionPair(files);
+}
 // Schnittversion = ein fertiges/halbfertiges Video als eigenes Projekt (eine Spur), zum Prüfen und Cut-Takt-Tippen
 async function importVersion(f) {
   const name = f.name.replace(/\.[^.]+$/, '');
