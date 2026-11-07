@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.4';
+const APP_VERSION = 'v4.4a';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -32,13 +32,24 @@ const DB = {
     });
   },
   req(store, mode, fn) {
-    return new Promise((res, rej) => {
+    const p = new Promise((res, rej) => {
       const t = DB.db.transaction(store, mode);
       const r = fn(t.objectStore(store));
       t.oncomplete = () => res(r && r.result);
       t.onerror = () => rej(t.error);
       t.onabort = () => rej(t.error || new Error('abgebrochen'));
     });
+    // iPad (Chrome): ein Hintergrund-Tab kann den Speicher sperren → nicht endlos warten, sondern klar melden
+    // (große Dateien beim Import brauchen länger; nur kleine Lese-/Schreibvorgänge im Zustand werden überwacht)
+    if (store !== 'state') return p;
+    return Promise.race([p, new Promise((_, rej) => setTimeout(() => { DB.haengt(); rej(new Error('Speicher antwortet nicht')); }, 15000))]);
+  },
+  haengt() {
+    if (DB.gemeldet) return; DB.gemeldet = true;
+    try { log('speicher-haengt'); } catch { /* egal */ }
+    modal(`<h2>Speicher blockiert</h2><p>Der App-Speicher antwortet gerade nicht – meist hält ein anderer Framepoint-Tab ihn fest.</p>
+      <p><b>Bitte alle anderen Framepoint-Tabs schließen</b> oder den Browser einmal ganz beenden (App-Übersicht → wegwischen) und neu öffnen. Deine Daten bleiben erhalten.</p>
+      <div class="row"><span class="grow"></span><button class="primary" onclick="location.reload()">Neu laden</button></div>`);
   },
   get: (s, k) => DB.req(s, 'readonly', (o) => o.get(k)),
   put: (s, v, k) => DB.req(s, 'readwrite', (o) => (k === undefined ? o.put(v) : o.put(v, k))),
