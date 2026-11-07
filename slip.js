@@ -6,7 +6,7 @@
  * Gemessen am iPad (07.11.2026, Proxies ohne Ton): Proxy hinkt ~0,8 Bild nach → feste Korrektur LEAD. */
 'use strict';
 const SLIP_PRE = 1.2;                 // s: Proxy vor dem Shot unsichtbar anlaufen lassen
-const SLIP_LEAD = 0.8 / 25;           // s: Ausgleich des gemessenen Nachlaufs (Proxy-Bild erscheint ~0,8 Bild zu spät)
+const SLIP_LEAD = 0;                  // s: feste Korrektur – nicht nötig, die Vorschau misst mit echten Anzeigezeiten und lernt den Vorhalt
 const pv = $('pv'), pvLast = $('pvLast');
 
 /* ---------- Proxy im Arbeitsspeicher ----------
@@ -222,12 +222,11 @@ function onPV(now, m) {
   VE.win = VE.win.concat(off).slice(-4);
   const mean = VE.win.reduce((x, y) => x + y, 0) / VE.win.length;
   VE.off = VE.win.length >= 2 ? mean : null;
-  if (VE.win.length === 4 && Math.abs(mean) > 1.2) {
-    // lernen: hinkt → mehr Vorhalt; nur plausible Messungen, höchstens 0,15 s je Schritt
-    if (Math.abs(mean) < 15) VE.vorhalt = clamp(VE.vorhalt - clamp(mean / fps, -0.15, 0.15), 0.1, 0.9);
-    const bisShot = VE.cur.sh.v_in / fps - aT;
-    if (bisShot > 0.95 && VE.versuche++ < 2) veStart(aT);         // nur vor dem Shot neu ansetzen (Stocken fällt in den Vorlauf)
-    else VE.win = [];
+  const bisShot = VE.cur.sh.v_in / fps - aT;
+  if (VE.win.length === 4 && Math.abs(mean) > 1.0 && bisShot > 0.95 && VE.versuche < 2) {
+    // nur VOR dem Shot: Vorhalt lernen (hinkt → mehr) und einmal neu ansetzen – das Stocken fällt dann in den Vorlauf
+    if (Math.abs(mean) < 15) VE.vorhalt = clamp(VE.vorhalt - mean / fps, 0.1, 0.9);
+    VE.versuche++; veStart(aT);
   }
 }
 // Bild-Rückrufe gehen verloren, wenn ein Video eine neue Quelle bekommt (WebKit) → bei jedem Start frisch anmelden
