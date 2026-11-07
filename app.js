@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.6a';
+const APP_VERSION = 'v4.6b';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -1932,7 +1932,24 @@ $('btnHelp').onclick = help; $('btnHelp2').onclick = help;
 // Jede Dateiauswahl protokollieren (öffnen / Auswahl angekommen) und Fehler sichtbar machen statt still abzubrechen
 const auswahlLog = (wo, fs) => log('datei-auswahl', { wo, n: fs.length, dateien: fs.slice(0, 6).map((f) => `${f.name} (${(f.size / 1e6).toFixed(1)} MB)`) });
 const sichtbar = (wo) => (e) => { log('import-fehler', { wo, msg: String(e && e.message || e) }); closeModal(); toast(`Import abgebrochen: ${e && e.message || e}`, 6000); };
-for (const id of ['importInput', 'versionInput', 'homeOpenInput', 'openInput']) $(id).addEventListener('click', () => log('auswahl-geoeffnet', { wo: id }));
+// iPad-Log 07.11. 23:19: sechs Antipper in 1,4 s öffneten mehrere Auswahlen übereinander, danach startete iOS die App neu
+// (app-start ohne datei-auswahl). Deshalb: eine Auswahl gleichzeitig, und merken, dass eine offen war.
+let auswahlSeit = 0;
+// gilt für alle Datei-Knöpfe, auch die im Versionen-Blatt (verInput)
+document.addEventListener('click', (e) => {
+  if (!(e.target instanceof HTMLInputElement) || e.target.type !== 'file') return;
+  const id = e.target.id || 'datei';
+  if (Date.now() - auswahlSeit < 2500) { e.preventDefault(); log('auswahl-doppelt', { wo: id }); return; }
+  auswahlSeit = Date.now();
+  log('auswahl-geoeffnet', { wo: id });
+  try { localStorage.setItem('fp-auswahl', JSON.stringify({ wo: id, t: Date.now() })); } catch { /* egal */ }
+  flushLog();
+}, true);
+document.addEventListener('change', (e) => {
+  if (!(e.target instanceof HTMLInputElement) || e.target.type !== 'file') return;
+  auswahlSeit = 0; try { localStorage.removeItem('fp-auswahl'); } catch { /* egal */ }
+}, true);
+window.addEventListener('focus', () => { auswahlSeit = 0; });   // Auswahl abgebrochen → sofort wieder antippbar
 $('importInput').onchange = (e) => {
   const fs = [...e.target.files]; e.target.value = ''; auswahlLog('projekt', fs);
   if (fs.length) importFiles(fs).catch(sichtbar('projekt'));
@@ -2302,6 +2319,17 @@ $('btnSend').onclick = () => bkSend(false);
   const oldLog = await DB.get('state', '__log__').catch(() => null);
   if (oldLog && oldLog.length) LOG.unshift(...oldLog.slice(-LOG_MAX + 50));
   log('app-start', { v: APP_VERSION, ua: navigator.userAgent.slice(0, 120), standalone: !!navigator.standalone || matchMedia('(display-mode: standalone)').matches });
+  // Hat iOS die App neu gestartet, während die Dateiauswahl offen war? Dann ist die Auswahl verloren → klar sagen
+  try {
+    const a = JSON.parse(localStorage.getItem('fp-auswahl') || 'null');
+    localStorage.removeItem('fp-auswahl');
+    if (a && Date.now() - a.t < 5 * 60e3) {
+      log('neustart-waehrend-auswahl', { wo: a.wo, vor_s: Math.round((Date.now() - a.t) / 1000) });
+      setTimeout(() => modal(`<h2>Auswahl unterbrochen</h2><p>Das iPad hat Framepoint während der Dateiauswahl neu gestartet – die gewählten Dateien sind nicht angekommen.</p>
+        <p class="hint">Bitte noch einmal wählen und dabei den Knopf <b>nur einmal</b> antippen. Liegen die Dateien in OneDrive, vorher in der Dateien-App einmal öffnen bzw. „Offline verfügbar“ machen, damit sie nicht erst beim Import geladen werden.</p>
+        <div class="row"><span class="grow"></span><button class="primary" onclick="closeModal()">OK</button></div>`), 600);
+    }
+  } catch { /* egal */ }
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
   $('appVer').textContent = `Framepoint ${APP_VERSION}`;
   await showHome();
