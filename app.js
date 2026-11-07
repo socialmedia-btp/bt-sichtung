@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.1a';
+const APP_VERSION = 'v4.1b';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -290,7 +290,8 @@ async function enterContext(tab, versionId) {
   S.byId = new Map(S.clips.map((c) => [c.id, c]));
   applyOffsets();
   S.activeTrack = S.tracks.some((t) => t.id === S.state.activeTrack) ? S.state.activeTrack : S.tracks[0].id;
-  S.pps = S.state.pps || (ver ? 8 : 20);
+  // Version ohne gespeicherten Zoom: ganze Filmlänge ≈ Breite der Timeline (8–60 px/s)
+  S.pps = S.state.pps || (ver ? clamp((cv.getBoundingClientRect().width - HEAD) / ver.dur, 8, 60) : 20);
   S.T = S.state.T ?? S.clips[0].s;
   S.curSel = null; S.selTake = null;
   const h = S.hist[ctxKey()];
