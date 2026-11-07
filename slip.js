@@ -161,6 +161,11 @@ function changedShots() { return (S.vsegs || []).map((x) => x.shot).filter((sh, 
 const veFps = () => S.ver.manifest.fps;
 const veSrcAt = (z, t) => z.srcIn / z.sh.src_fps + (t - z.sh.v_in / veFps()) + SLIP_LEAD;   // gewünschte Proxy-Zeit
 function veStart(t) {
+  if (pv.readyState < 1) {                                       // Proxy noch nicht geladen → erst danach starten
+    VE.started = true;
+    pv.addEventListener('loadedmetadata', () => { if (VE.cur && S.playing) veStart(video.currentTime); }, { once: true });
+    return;
+  }
   pv.playbackRate = 1; VE.win = []; VE.synced = false; VE.justStarted = true; VE.started = true; VE.lastSeek = performance.now();
   pv.currentTime = Math.max(0, veSrcAt(VE.cur, t + VE.seekLag));
   pv.play().catch(() => {});
@@ -194,7 +199,8 @@ function onPV(now, m) {
   const fps = veFps();
   const aT = VE.aMeta.t + (m.expectedDisplayTime - VE.aMeta.d) / 1000 * video.playbackRate;
   const off = (m.mediaTime - veSrcAt(VE.cur, aT)) * fps;        // Versatz in Sequenzbildern (+ = Proxy voraus)
-  if (VE.justStarted) { VE.justStarted = false; VE.seekLag = clamp(VE.seekLag - off / fps, 0.02, 1.5); }   // Startverzögerung lernen
+  // Startverzögerung lernen – nur aus plausiblen Messungen (ein noch ladender Proxy lieferte sonst absurde Werte)
+  if (VE.justStarted) { VE.justStarted = false; if (Math.abs(off) < 12) VE.seekLag = clamp(VE.seekLag - off / fps * 0.7, 0.02, 0.6); }
   VE.win = VE.win.concat(off).slice(-5);
   const mean = VE.win.reduce((x, y) => x + y, 0) / VE.win.length;
   if (Math.abs(off) > 12 && performance.now() - VE.lastSeek > 700) { veStart(aT); return; }      // grob daneben → einmal springen
@@ -206,10 +212,13 @@ video.requestVideoFrameCallback(onMain);
 pv.requestVideoFrameCallback(onPV);
 // Shot mit 1 s Vor- und Nachlauf spielen (im Slip-Modus mit dem Entwurf, sonst mit dem wirksamen Zielzustand)
 let ctxStop = null;
-function playContext(sh, srcIn) {
-  const fps = S.ver.manifest.fps, c = S.clips[0];
+async function playContext(sh, srcIn) {
+  const fps = S.ver.manifest.fps, c = S.clips[0], fc = footClipOf(sh);
   if (SL) SL.ctx = { sh, srcIn };
   pvLast.classList.add('hidden');
+  // Proxy vorladen, damit er beim Start schon bereit ist
+  if (pv.dataset.cid !== fc.id) { pv.src = S.urls.get(fc.id); pv.dataset.cid = fc.id; }
+  if (pv.readyState < 1) await new Promise((r) => { pv.addEventListener('loadedmetadata', r, { once: true }); setTimeout(r, 3000); });
   S.T = c.s + Math.max(0, sh.v_in / fps - 1); showFrame(true);
   setTimeout(() => play(), 120);
   clearInterval(ctxStop);
