@@ -348,7 +348,7 @@ async function playContext(sh, srcIn) {
 // Szenenkarte: Knöpfe + Zustand (wird von renderShotCard aufgerufen)
 function slipCardHtml(sh) {
   const grund = slipGrund(sh), a = auftragOf(sh);
-  if (grund && !a) return sh.editierbar ? `<div class="hint">Inhalt verschieben: ${esc(grund)}</div>` : '';
+  if (grund && !a) return sh.editierbar && S.footClips.length ? `<div class="hint">Inhalt verschieben: ${esc(grund)}</div>` : '';
   return `${a ? `<div class="change">✎ ${esc(a.typ === 'slip' ? 'Inhalt ' + deltaTxt(sh, a.nachher.src_in) : 'getauscht')} <span class="hint">· Länge gleich · Ton bleibt</span></div>` : ''}
     <div class="card-row slip-btns">
       ${grund ? '' : '<button data-s="slip" class="slip-go">⇆ Inhalt verschieben</button>'}

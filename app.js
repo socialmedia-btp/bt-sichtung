@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.5c';
+const APP_VERSION = 'v4.5d';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -342,6 +342,7 @@ async function enterContext(tab, versionId) {
   log('kontext', { tab: S.ps.tab, version: ver ? ver.version_id : null });
   resizeCanvas(); showFrame(true); renderSide(); save(); bkRender();
 }
+const GRAFIK_NAME = /Kinobalken|Bauchbinde|(^|[_\W])BB\d|Titel|Logo|Textwisch|Endcard|Untertitel|Lower.?Third|Grafik|_alpha\b/i;
 // Sichtbarer Shot je Zeitpunkt = oberste Ebene; benachbarte Stücke desselben Shots zusammengefasst (Sekunden ab Versionsbeginn)
 function visibleShots(m) {
   const lvl = (s) => +String(s.ebene).replace(/\D/g, '') || 0;
@@ -349,12 +350,16 @@ function visibleShots(m) {
   // Overlay = die konkrete Instanz auf höherer Ebene, die zeitlich über einem Shot mit „overlay: <Name>“ liegt (F13)
   const isOverlay = (o) => m.shots.some((t) => lvl(o) > lvl(t) && o.v_in < t.v_out && o.v_out > t.v_in
     && (t.folgen || []).includes('overlay: ' + o.name));
-  const shots = m.shots.filter((x) => !isOverlay(x));
+  // Grafik-Ebenen (Bauchbinde, Titel, Logo …) sind nur „der Shot“, wenn darunter nichts liegt (Feedback V26, B1).
+  // Ältere Manifeste ohne rolle: am Namen erkennen (gleiches Muster wie bt_v4.GRAFIK_NAME)
+  const isGrafik = (o) => o.rolle === 'grafik' || isOverlay(o) || (!o.clip && GRAFIK_NAME.test(o.name || ''));
+  const shots = m.shots;
   const cuts = [...new Set(shots.flatMap((s) => [s.v_in, s.v_out]))].sort((a, b) => a - b);
   const out = [];
   for (let i = 0; i + 1 < cuts.length; i++) {
     const a = cuts[i], b = cuts[i + 1];
-    const top = shots.filter((s) => s.v_in <= a && s.v_out >= b).sort((x, y) => lvl(y) - lvl(x))[0];
+    const hier = shots.filter((s) => s.v_in <= a && s.v_out >= b).sort((x, y) => lvl(y) - lvl(x));
+    const top = hier.find((s) => !isGrafik(s)) || hier[0];
     if (!top) continue;
     const last = out[out.length - 1];
     if (last && last.shot === top && last.b === a / m.fps) last.b = b / m.fps;
@@ -911,7 +916,8 @@ function renderShotCard(box) {
   box.innerHTML = `<div class="card-title"><span class="dot" style="background:${sh.editierbar ? '#4c9aff' : '#6b6f76'}"></span>
       <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Shot ${+sh.nr} · ${esc(shotName(sh))}</span></div>
     <div class="card-row"><span class="val">${clock(sh.v_in / fps, fps)} – ${clock(sh.v_out / fps, fps)} · ${durTxt((sh.v_out - sh.v_in) / fps)}</span></div>
-    <div class="hint" style="margin:2px 0 4px">${sh.editierbar ? 'Änderbar' : 'Gesperrt: ' + esc(sh.grund || '') + ' – kommentierbar'}</div>
+    <div class="hint" style="margin:2px 0 4px">${!S.footClips.length ? 'Bewerten und kommentieren · Bild tauschen/verschieben macht Blue Tacit im Schnitt'
+      : sh.editierbar ? 'Änderbar' : 'Gesperrt: ' + esc(sh.grund || '') + ' – kommentierbar'}</div>
     ${slipCardHtml(sh)}
     <div class="card-row stars">${[1, 2, 3].map((n) => `<button data-r="${n}" class="${w !== 'rot' && w >= n ? 'on' : ''}" title="${n} Stern${n > 1 ? 'e' : ''} (Taste ${n})">★</button>`).join('')}
       <button data-r="rot" class="rot${w === 'rot' ? ' on' : ''}" title="Muss auf jeden Fall raus (Taste X)">✕ Muss raus</button></div>
@@ -1566,7 +1572,8 @@ async function buildExport() {
   S.ps.revision = (S.ps.revision || 0) + 1;
   const ps = JSON.parse(JSON.stringify(S.ps));
   const foot = S.footClips.map((c) => ({ ...c }));
-  const view = { tab: ps.tab, version_id: S.ver ? S.ver.version_id : null, T: S.T, activeTrack: S.activeTrack, pps: S.pps };
+  // Version: Position in Sekunden ab Versionsbeginn (intern liegt sie um VBASE, Feedback V26 B4)
+  const view = { tab: ps.tab, version_id: S.ver ? S.ver.version_id : null, T: S.ver ? Math.round((S.T - VBASE) * 1000) / 1000 : S.T, activeTrack: S.activeTrack, pps: S.pps };
   save();
   const out = {
     format: 'bt-stand', contract: 4, stand_id: 's-' + uid(), revision: ps.revision,
@@ -1643,11 +1650,11 @@ async function saveFile() {
   if (!touch || !canShare) { download(); done(`${name} im Download-Ordner`); return; }
   // iPad: Teilen braucht einen frischen Fingertipp → kurzer Dialog
   modal(`<h2>Speichern</h2><p>${summary}.</p>${probHtml}
-    <p class="hint">„Teilen“ → „In Dateien sichern“ → z. B. in den OneDrive-Projektordner. Mit „Öffnen“ machst du später genau hier weiter – auch auf einem anderen Gerät.</p>
+    <p class="hint">„Teilen“ → „In Dateien sichern“ → in den OneDrive-Projektordner <b>${esc(S.proj.meta.name || '')}</b> (nicht in „Versionen“). Mit „Öffnen“ machst du später genau hier weiter – auch auf einem anderen Gerät.</p>
     <div class="row"><button id="mClose">Abbrechen</button><button id="mDl">Herunterladen</button><button id="mShare" class="primary">Teilen</button></div>`, (b) => {
     b.querySelector('#mClose').onclick = closeModal;
     b.querySelector('#mDl').onclick = () => { download(); closeModal(); };
-    b.querySelector('#mShare').onclick = () => navigator.share({ files: [file], title: name })
+    b.querySelector('#mShare').onclick = () => navigator.share({ files: [file] })   // ohne title: iOS legt sonst eine Text.txt daneben (V26, B3)
       .then(() => { if (S.rev === rev) markSaved(true); log('speichern-geteilt', { name, stand: data.stand_id }); closeModal(); toast('An „Teilen“ übergeben'); }).catch((e) => log('teilen-abgebrochen', { name: e.name }));
   });
 }
@@ -1742,6 +1749,11 @@ async function loadSelection(d) {
   for (const v of d.versionen || []) {
     const ver = S.ps.versions.find((x) => x.version_id === v.version_id);
     if (ver) verCtx.set(ver, await ctxFromStand(v, ver, keepView(ver.ctx))); else wartend[v.version_id] = v;
+  }
+  // Abspielposition der Version wiederherstellen (ältere Dateien hatten die interne Zeit um VBASE)
+  if (d.view && d.view.tab === 'edit' && Number.isFinite(d.view.T)) {
+    const vc = [...verCtx].find(([ver]) => ver.version_id === d.view.version_id);
+    if (vc) vc[1].T = d.view.T > VBASE / 2 ? d.view.T : VBASE + d.view.T;
   }
   // Übernehmen
   const tab = S.ps.tab, av = S.ps.activeVersion;
@@ -1866,7 +1878,7 @@ function showLog() {
       const d = new Date();
       const name = `framepoint_log_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.txt`;
       const file = new File([`Framepoint ${APP_VERSION}\n${navigator.userAgent}\n\n` + LOG.map(logLine).join('\n')], name, { type: 'text/plain' });
-      if (matchMedia('(pointer: coarse)').matches && navigator.canShare && navigator.canShare({ files: [file] })) navigator.share({ files: [file], title: name }).catch(() => {});
+      if (matchMedia('(pointer: coarse)').matches && navigator.canShare && navigator.canShare({ files: [file] })) navigator.share({ files: [file] }).catch(() => {});
       else { const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = name; a.click(); }
     };
   });
