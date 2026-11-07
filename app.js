@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.1';
+const APP_VERSION = 'v4.1a';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -2098,13 +2098,7 @@ $('btnSend').onclick = () => bkSend(false);
   // ?import=<Pfad>/ lädt einen Projektordner vom selben Server (Testserver am PC, ohne Dateiauswahl)
   const q = new URLSearchParams(location.search);
   const imp = q.get('import');
-  // ?bk=<Schlüssel>[&bkurl=…]: Senden an Blue Tacit für ein Projekt einrichten
-  if (q.get('bk')) {
-    const bkurl = q.get('bkurl');
-    if (bkurl && bkOk(bkurl)) { try { localStorage.setItem('bk-url', bkurl); } catch { /* egal */ } }
-    if (!imp) history.replaceState(null, '', location.pathname);
-    await bkSetup(q.get('bk'), bkurl || (() => { try { return localStorage.getItem('bk-url'); } catch { return null; } })());
-  }
+  if (!imp && q.get('bk')) history.replaceState(null, '', location.pathname);
   bkRetry();
   if (imp && !/^[a-z]+:|^\/\//i.test(imp)) { // nur Ordner derselben Seite
     history.replaceState(null, '', location.pathname);
@@ -2131,5 +2125,11 @@ $('btnSend').onclick = () => bkSend(false);
         await importVersionPair([new File([jb], vj.split('/').pop()), new File([vb], m.export.datei, { type: 'video/mp4' })]);
       }
     }
+  }
+  // ?bk=<Schlüssel>[&bkurl=…]: Senden an Blue Tacit einrichten – nach einem Import, damit der Hinweis sichtbar bleibt
+  if (q.get('bk')) {
+    const bkurl = q.get('bkurl');
+    if (bkurl && bkOk(bkurl)) { try { localStorage.setItem('bk-url', bkurl); } catch { /* egal */ } }
+    await bkSetup(q.get('bk'), bkurl || (() => { try { return localStorage.getItem('bk-url'); } catch { return null; } })());
   }
 })();
