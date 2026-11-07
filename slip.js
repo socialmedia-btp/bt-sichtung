@@ -289,10 +289,30 @@ function veListen() {
   veIds = [video.requestVideoFrameCallback(onMain), pv.requestVideoFrameCallback(onPV)];
 }
 veListen();
-video.addEventListener('play', veListen);
+video.addEventListener('play', () => { stillZiel = ''; veListen(); });
 // Ersatztakt: liefert der Browser keine Bild-Rückmeldungen (ausgeblendetes Fenster, Browser ohne requestVideoFrameCallback),
 // läuft die Vorschau über currentTime weiter (ungenauer, aber besser als gar nicht)
+// Stillstand (Pause, Spulen, ±1 Bild): in geänderten Szenen das passende Bild aus dem neuen Inhalt zeigen
+let stillZiel = '';
+async function stillstandBild() {
+  if (SL || !S.ver || S.playing || !S.clips[0]) { if (!S.playing && !SL && stillZiel) { stillZiel = ''; pvStill.style.opacity = 0; $('pvBadge').classList.add('hidden'); } return; }
+  const t = S.T - S.clips[0].s, sg = shotAt(t), sh = sg && sg.shot;
+  const z = sh && effZiel(sh) && footClipOf(sh) ? { sh, srcIn: effSrcIn(sh) } : null;
+  if (!z) { if (stillZiel) { stillZiel = ''; pvStill.style.opacity = 0; $('pvBadge').classList.add('hidden'); } return; }
+  const f = sh.src_fps, fps = veFps();
+  const bild = z.srcIn + Math.floor((t - sh.v_in / fps) * fps + 1e-4) * Math.round(f / fps);   // Quellbild zum Sequenzbild
+  const key = sh.id + '@' + z.srcIn + '#' + bild;
+  if (key === stillZiel) return;
+  stillZiel = key;
+  const sitzung = SITZUNG;
+  await pvLoad(pvStill, footClipOf(sh));
+  if (sitzung !== SITZUNG || stillZiel !== key || S.playing) return;
+  pvStill.classList.remove('hidden');
+  pvStill.currentTime = (bild + 0.5) / f;
+  pvStill.addEventListener('seeked', () => { if (stillZiel === key && !S.playing) { pvStill.style.opacity = 1; $('pvBadge').classList.remove('hidden'); } }, { once: true });
+}
 setInterval(() => {
+  stillstandBild();
   if (!S.ver || !S.playing) return;
   const jetzt = performance.now();
   if (!(VE.rvfcMain > jetzt - 250)) mainStep({ mediaTime: video.currentTime, expectedDisplayTime: jetzt });
