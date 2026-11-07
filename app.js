@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.4p';
+const APP_VERSION = 'v4.5';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -45,7 +45,9 @@ const DB = {
     // iPad (Chrome): ein Hintergrund-Tab kann den Speicher sperren → nicht endlos warten, sondern klar melden
     // (große Dateien beim Import brauchen länger; nur kleine Lese-/Schreibvorgänge im Zustand werden überwacht)
     if (store !== 'state' || DB.gross) return p; // während großer Importe warten Zustands-Zugriffe legitim länger
-    return Promise.race([p, new Promise((_, rej) => setTimeout(() => { DB.haengt(); rej(new Error('Speicher antwortet nicht')); }, 15000))]);
+    let timer;
+    const wache = new Promise((_, rej) => { timer = setTimeout(() => { DB.haengt(); rej(new Error('Speicher antwortet nicht')); }, 15000); });
+    return Promise.race([p.finally(() => clearTimeout(timer)), wache]);  // Warnung nur, wenn der Zugriff wirklich offen bleibt (F01)
   },
   haengt() {
     if (DB.gemeldet) return; DB.gemeldet = true;
@@ -129,8 +131,9 @@ const COM_H = 28;  // Kommentar-Zeile: antippen = Marker + Sprachnotiz am Abspie
 /* ---------- Projekte ---------- */
 async function showHome() {
   if (rec || recStarting) { toast('Erst die Sprachnotiz beenden'); return; }
+  if (typeof stopAlles === 'function') stopAlles();
   stopPlay();
-  if (S.proj && S.dirty && !$('editor').classList.contains('hidden') && (await bkLink(await projPid(S.proj)))) await bkSend(true);
+  if (S.proj && S.ps && (S.ps.gen || 0) > (S.ps.bkGen || 0) && !$('editor').classList.contains('hidden') && (await bkLink(await projPid(S.proj)))) await bkSend(true);
   await flushSave(); if (S.state) await save(true);
   S.logPid = null;
   $('editor').classList.add('hidden'); $('home').classList.remove('hidden');
@@ -227,6 +230,7 @@ async function deleteProject(p) {
 
 /* ---------- Projekt öffnen ---------- */
 async function openProject(id) {
+  if (typeof stopAlles === 'function') { stopAlles(); pvReset(); }
   await flushSave();
   const p = await DB.get('projects', id);
   S.logPid = id;
@@ -237,6 +241,15 @@ async function openProject(id) {
   S.footTracks = p.meta.tracks.map((t, i) => ({ ...t, color: TRACK_COLORS[i % TRACK_COLORS.length] }));
   S.footClips = p.meta.clips.map((c) => ({ ...c, s0: isoToSec(c.start) }));
   S.ps = await migrateState(await DB.get('state', id), id);
+  // Notfall-Sicherung vom letzten Verlassen übernehmen, wenn sie neuer ist als der gespeicherte Stand (F02)
+  try {
+    const nf = JSON.parse(localStorage.getItem('fp-notfall') || 'null');
+    if (nf && nf.pid === id && (nf.gen || 0) > (S.ps.gen || 0) && nf.ps && nf.ps.v === 4) {
+      S.ps = nf.ps; log('notfall-uebernommen', { gen: nf.gen });
+      await DB.put('state', JSON.parse(JSON.stringify(S.ps)), id);
+    }
+    if (nf && nf.pid === id) localStorage.removeItem('fp-notfall');
+  } catch { /* egal */ }
   // Footage-Zeiten auch dann setzen, wenn das Projekt im Edit-Tab startet (Export braucht sie)
   for (const c of S.footClips) c.s = c.s0 + (S.ps.shortlist.offsets[c.track] || 0);
   S.hist = {}; S.state = null; S.ver = null;
@@ -292,7 +305,7 @@ function versionClip(ver) {
 }
 async function enterContext(tab, versionId) {
   if (rec || recStarting) { toast('Erst die Sprachnotiz beenden'); return false; }
-  if (typeof SL !== 'undefined' && SL) slipClose();
+  if (typeof stopAlles === 'function') stopAlles();
   if (tab !== 'edit' && !S.footClips.length) { // Kunden-Projekt: es gibt keine Shortlist
     const v = S.ps.versions[S.ps.versions.length - 1]; if (!v) return false;
     tab = 'edit'; versionId = versionId || v.version_id;
@@ -539,7 +552,7 @@ function updateNoteTarget() {
   const cs = S.curSel && sels().includes(S.curSel) ? S.curSel : null;
   if (S.ver && !cs) {
     const sg = shotNow();
-    if (sg) { el.innerHTML = `🎙 Notiz zu: <b>Shot ${sg.shot.nr}</b> ${esc(shotName(sg.shot))}`; el.classList.add('on'); return; }
+    if (sg) { el.innerHTML = `🎙 Notiz zu: <b>Shot ${+sg.shot.nr}</b> ${esc(shotName(sg.shot))}`; el.classList.add('on'); return; }
   }
   const s = cs || selAtPlayhead();
   if (!s) { el.textContent = '🎙 keine Auswahl hier → wird Marker'; el.classList.remove('on'); return; }
@@ -558,7 +571,7 @@ function updateHud(c) {
     updateNoteTarget();
   }
   $('hud').innerHTML = !c ? '' : sg
-    ? `<span class="cam">Shot ${sg.shot.nr}</span> · ${esc(shotName(sg.shot))} · <span class="${sg.shot.editierbar ? 'ok' : 'lock'}">${sg.shot.editierbar ? 'änderbar' : 'gesperrt: ' + esc(sg.shot.grund || '')}</span>`
+    ? `<span class="cam">Shot ${+sg.shot.nr}</span> · ${esc(shotName(sg.shot))} · <span class="${sg.shot.editierbar ? 'ok' : 'lock'}">${sg.shot.editierbar ? 'änderbar' : 'gesperrt: ' + esc(sg.shot.grund || '')}</span>`
     : `<span class="cam" style="color:${tr.color}">${esc(tr.label)}</span> · ${esc(c.name)}`;
   $('tc').innerHTML = `<b>${clock(S.T, fps)}</b>` + (c ? ` · Clip ${tcClip(S.T - c.s, fps)} / ${tcClip(c.dur, fps)} · ${fps} fps` : '');
 }
@@ -702,7 +715,7 @@ async function deleteSel(s) {
   if (S.curSel === s) S.curSel = null;
   changed();
 }
-function changed() { S.rev = (S.rev || 0) + 1; save(); renderSide(); requestDraw(); markSaved(false); recordHistory(); }
+function changed() { S.rev = (S.rev || 0) + 1; if (S.ps) S.ps.gen = (S.ps.gen || 0) + 1; save(); renderSide(); requestDraw(); markSaved(false); recordHistory(); }
 
 /* ---------- Cut-Takt ----------
  * Schnittversion abspielen und bei jedem gewünschten Schnitt ✂ tippen. Jede Aufnahme = Take.
@@ -782,6 +795,7 @@ function recordHistory() {
 }
 function restoreSnap(js) {
   const d = JSON.parse(js);
+  S.rev = (S.rev || 0) + 1; if (S.ps) S.ps.gen = (S.ps.gen || 0) + 1;
   const keep = S.curSel && S.curSel.id;
   S.state.selections = d.sel; S.state.offsets = d.off; S.state.takes = d.takes || []; lastSnap = js;
   if (d.ev) S.state.ereignisse = d.ev;
@@ -895,7 +909,7 @@ function renderShotCard(box) {
   if (!sg) { box.innerHTML = ''; return; }
   const sh = sg.shot, fps = S.ver.manifest.fps, b = (S.state.bewertungen || {})[sh.id], w = b ? b.wert : 0;
   box.innerHTML = `<div class="card-title"><span class="dot" style="background:${sh.editierbar ? '#4c9aff' : '#6b6f76'}"></span>
-      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Shot ${sh.nr} · ${esc(shotName(sh))}</span></div>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Shot ${+sh.nr} · ${esc(shotName(sh))}</span></div>
     <div class="card-row"><span class="val">${clock(sh.v_in / fps, fps)} – ${clock(sh.v_out / fps, fps)} · ${durTxt((sh.v_out - sh.v_in) / fps)}</span></div>
     <div class="hint" style="margin:2px 0 4px">${sh.editierbar ? 'Änderbar' : 'Gesperrt: ' + esc(sh.grund || '') + ' – kommentierbar'}</div>
     ${slipCardHtml(sh)}
@@ -1586,7 +1600,7 @@ const saveName = (proj = S.proj) => proj.meta.name.replace(/[^\w-]+/g, '_') + '_
 function markSaved(saved) {
   S.dirty = !saved;
   $('btnSave').textContent = saved ? 'Speichern' : 'Speichern •';
-  if (!saved && S.bkSent && $('btnSend').textContent === 'Gesendet ✓') $('btnSend').textContent = 'Senden';
+  if (!saved && $('btnSend').textContent === 'Gesendet ✓') $('btnSend').textContent = 'Senden';
 }
 async function saveFile() {
   if (rec || recStarting) { toast('Erst die Sprachnotiz beenden'); return; }
@@ -1696,9 +1710,20 @@ async function importSels(arr, clipIdOf) {
 const importTakes = (arr, base) => (arr || []).map((tk) => ({ id: tk.id, single: !!tk.single, start: base + tk.start, end: base + tk.end, created: Date.parse(tk.created) || Date.now(), cuts: tk.cuts.map((x) => base + x), ...(tk.cutCreated ? { cutCreated: tk.cutCreated } : {}) }));
 const keepView = (c) => ({ T: c.T, pps: c.pps, activeTrack: c.activeTrack });
 // Versions-Kontext aus einem `versionen`-Eintrag (Zeiten dort = Sekunden ab Versionsbeginn)
+function ereignisseGueltig(evs, ver) {
+  const shots = new Map(ver.manifest.shots.map((s) => [s.id, s]));
+  const gut = [];
+  for (const e of Array.isArray(evs) ? evs : []) {
+    const sh = e && shots.get(e.shot);
+    const ok = sh && typeof e.change_id === 'string' && (e.typ === 'reset'
+      || ((e.typ === 'slip' || e.typ === 'tausch') && e.ziel && typeof e.ziel.clip === 'string' && Number.isInteger(e.ziel.src_in) && e.ziel.src_fps > 0 && sh.editierbar));
+    if (ok) gut.push(e); else log('ereignis-verworfen', { shot: e && e.shot, typ: e && e.typ });
+  }
+  return gut;
+}
 async function ctxFromStand(v, ver, keep) {
   const { list } = await importSels((v.kommentare || []).map((x) => (x.kind === 'marker' ? { ...x, t: VBASE + x.t } : x)), () => 'v:' + ver.version_id);
-  return newCtx({ ...(keep || {}), selections: list, offsets: {}, takes: importTakes(v.takes, VBASE), ereignisse: v.ereignisse || [], activeTrack: 'VERSION',
+  return newCtx({ ...(keep || {}), selections: list, offsets: {}, takes: importTakes(v.takes, VBASE), ereignisse: ereignisseGueltig(v.ereignisse, ver), activeTrack: 'VERSION',
     bewertungen: Object.fromEntries((v.bewertungen || []).map((b) => [b.shot, { wert: b.wert, t: Date.parse(b.t) || Date.now() }])) });
 }
 // Stand laden: erst den kompletten neuen Zustand vorbereiten, dann in einem Schritt übernehmen (F05).
@@ -1789,7 +1814,10 @@ const ACT = {
 };
 function updateMute() { document.querySelectorAll('[data-act=mute]').forEach((b) => { b.textContent = S.muted ? '🔇' : '🔊'; }); }
 document.querySelectorAll('#reelBar [data-star]').forEach((b) => b.addEventListener('click', () => setStars(+b.dataset.star)));
-document.querySelectorAll('button[data-act]').forEach((b) => b.addEventListener('click', () => { log('knopf', { act: b.dataset.act }); ACT[b.dataset.act](); }));
+document.querySelectorAll('button[data-act]').forEach((b) => b.addEventListener('click', () => {
+  if (typeof SL !== 'undefined' && SL) return; // Verschiebe-Modus: globale Aktionen gesperrt (F15)
+  log('knopf', { act: b.dataset.act }); ACT[b.dataset.act]();
+}));
 // Aufs Video tippen = Play/Pause
 let vPress = null;
 $('videoWrap').addEventListener('pointerdown', (e) => {
@@ -1845,6 +1873,7 @@ function showLog() {
 }
 document.addEventListener('keydown', (e) => {
   if ($('editor').classList.contains('hidden') || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (typeof SL !== 'undefined' && SL) return; // Verschiebe-Modus hat eigene Tasten (slip.js)
   const k = e.key.toLowerCase();
   if (k === ' ') { e.preventDefault(); ACT.play(); }
   else if (k === 'arrowleft') e.shiftKey ? ACT.back1s() : ACT.backF();
@@ -1969,6 +1998,8 @@ function manifestFehler(m) {
     if (typeof sh.id !== 'string' || ids.has(sh.id)) return `Shot-ID fehlt/doppelt (${sh.id})`;
     ids.add(sh.id);
     if (!int(sh.v_in) || !int(sh.v_out) || sh.v_out <= sh.v_in || sh.v_out > m.dauer_frames) return `Shot ${sh.id}: Zeiten ungültig`;
+    if (!int(sh.nr)) return `Shot ${sh.id}: Nummer ungültig`;
+    if (sh.editierbar && (!int(sh.src_in) || !int(sh.src_out) || sh.src_out <= sh.src_in || !(sh.src_fps > 0 && sh.src_fps <= 240))) return `Shot ${sh.id}: Quellzeiten ungültig`;
     if (!/^V\d+$/.test(String(sh.ebene))) return `Shot ${sh.id}: Ebene ungültig`;
   }
   return null;
@@ -2041,12 +2072,22 @@ function deleteVersion(v) {
     <div class="row"><button id="mNo">Abbrechen</button><button id="mYes" class="primary">Entfernen</button></div>`, (b) => {
     b.querySelector('#mNo').onclick = versionSheet;
     b.querySelector('#mYes').onclick = async () => {
-      if (S.ver === v) await enterContext('shortlist');
+      if (S.ver === v) {
+        // vorher in einen Kontext wechseln, der bleibt (F13): andere Version, sonst Footage, sonst gar keiner
+        const rest = S.ps.versions.filter((x) => x !== v);
+        if (rest.length) await enterContext('edit', rest[rest.length - 1].version_id);
+        else if (S.footClips.length) await enterContext('shortlist');
+        else { stopAlles(); stopPlay(); S.state = null; S.ver = null; S.ps.activeVersion = null; }
+      }
       await DB.del('files', v.file).catch(() => {});
       for (const s of v.ctx.selections) for (const n of s.notes || []) await DB.del('notes', n.id).catch(() => {});
       S.urls.delete('v:' + v.version_id); delete S.hist[v.version_id];
       S.ps.versions = S.ps.versions.filter((x) => x !== v);
       log('version-entfernt', { version: v.version_id });
+      if (!S.state) {   // Kunden-Projekt ohne Version: Zustand direkt sichern, zur Projektliste
+        await DB.put('state', JSON.parse(JSON.stringify(S.ps)), S.proj.id);
+        closeModal(); S.proj = null; $('editor').classList.add('hidden'); $('home').classList.remove('hidden'); await showHome(); return;
+      }
       save(true); renderTabs(); versionSheet();
     };
   });
@@ -2102,6 +2143,13 @@ $('modal').addEventListener('click', (e) => { if (e.target.id === 'modal') close
 // Seite hält den Speicher dann fest und die nächste Seite hängt. Deshalb beim Verlassen offene Vorgänge abbrechen und den
 // Speicher freigeben; kommt man per „Zurück“ wieder (eingefrorene Seite), neu laden.
 window.addEventListener('pagehide', () => {
+  // Notfall-Sicherung (F02): die gleich abgebrochene letzte Speicherung synchron festhalten; beim nächsten Öffnen übernommen
+  try {
+    if (S.proj && S.ps) {
+      if (S.state) { S.state.activeTrack = S.activeTrack; S.state.T = S.T; S.state.pps = S.pps; }
+      localStorage.setItem('fp-notfall', JSON.stringify({ pid: S.proj.id, gen: S.ps.gen || 0, t: Date.now(), ps: S.ps }));
+    }
+  } catch { /* Speicher voll o. ä. – dann gilt der letzte gespeicherte Stand */ }
   for (const t of DB.offen) { try { t.abort(); } catch { /* schon fertig */ } }
   DB.offen.clear();
   try { DB.db && DB.db.close(); } catch { /* egal */ }
@@ -2109,7 +2157,11 @@ window.addEventListener('pagehide', () => {
 window.addEventListener('pageshow', (e) => { if (e.persisted) location.reload(); });
 document.addEventListener('visibilitychange', () => {
   log(document.hidden ? 'app-hintergrund' : 'app-vordergrund', vstate());
-  if (document.hidden) { stopPlay(); save(true); flushLog(); }
+  if (document.hidden) {
+    stopPlay(); save(true); flushLog();
+    // andere App/Startbildschirm: ungesendete Änderungen bestmöglich senden (Rest beim nächsten Öffnen aus der Warteschlange)
+    if (S.proj && S.ps && (S.ps.gen || 0) > (S.ps.bkGen || 0)) projPid(S.proj).then(bkLink).then((l) => l && bkSend(true)).catch(() => {});
+  }
 });
 
 /* ---------- Briefkasten: Stand ohne Dialog an Blue Tacit senden ----------
@@ -2140,58 +2192,65 @@ async function bkRender() {
   b.classList.toggle('hidden', !link);
   $('btnSave').classList.toggle('primary', !link);
   if (!link) return;
-  const q = await DB.get('state', '__bkq__' + pid).catch(() => null);
-  const st = S.bkSent && S.bkSent.pid === pid ? S.bkSent : null;
-  b.textContent = q ? 'Senden ⏳' : st && st.rev === S.rev ? 'Gesendet ✓' : 'Senden';
-  b.title = q ? 'Wartet auf Internet – wird automatisch nachgesendet' : st ? `Zuletzt gesendet ${new Date(st.t).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}` : `An Blue Tacit senden (${link.name})`;
+  const q = await bkQ(pid), wartet = q.some((x) => !x.fehler), fehler = q.some((x) => x.fehler);
+  const gesendet = S.ps && (S.ps.bkGen || 0) >= (S.ps.gen || 0) && (S.ps.gen || 0) > 0;
+  b.textContent = fehler ? 'Senden ⚠' : wartet ? 'Senden ⏳' : gesendet ? 'Gesendet ✓' : 'Senden';
+  b.title = fehler ? 'Ein Stand wurde abgelehnt – erneut senden oder als Datei speichern' : wartet ? 'Wartet auf Internet – wird automatisch nachgesendet' : `An Blue Tacit senden (${link.name})`;
 }
-// Ein Stand-JSON an den Briefkasten. Rückgabe: 'ok' | 'netz' (→ Warteschlange) | Fehlertext (endgültig)
+// Ein Stand-JSON an den Briefkasten (60 s Zeitgrenze). Rückgabe: 'ok' | 'netz' (→ später nochmal) | Fehlertext (endgültig)
 async function bkPost(link, body) {
   let r;
-  try { r = await fetch(`${link.url}/v1/stand?k=${encodeURIComponent(link.key)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body }); }
-  catch { return 'netz'; }
+  const ab = new AbortController(), to = setTimeout(() => ab.abort(), 60000);
+  try { r = await fetch(`${link.url}/v1/stand?k=${encodeURIComponent(link.key)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: ab.signal }); }
+  catch { return 'netz'; } finally { clearTimeout(to); }
   if (r.ok) return 'ok';
   const j = await r.json().catch(() => ({}));
   if (r.status >= 500 || r.status === 429) return 'netz';
   if (j.fehler === 'zu_gross') return 'Der Stand ist zu groß für den Briefkasten (viele lange Sprachnotizen). Bitte über „Speichern“ als Datei schicken.';
-  if (j.fehler === 'veraltet') return 'Im Briefkasten liegt schon ein neuerer Stand (z. B. von einem anderen Gerät). Dieser ältere Stand wurde nicht gesendet.';
   return 'Senden abgelehnt: ' + (j.fehler || r.status);
 }
+/* Warteschlange (F04): je Projekt eine Liste {stand_id, body, gen, t, fehler?}. Ein Stand wird VOR dem Senden eingereiht und nach
+ * der Bestätigung genau anhand seiner stand_id entfernt – ein inzwischen eingereihter neuerer Stand bleibt. Endgültig abgelehnte
+ * bleiben mit Fehler stehen (nicht still verwerfen). */
+const bkQKey = (pid) => '__bkq__' + pid;
+async function bkQ(pid) { const q = await DB.get('state', bkQKey(pid)).catch(() => null); return Array.isArray(q) ? q : q && q.body ? [{ ...q, stand_id: 'alt' }] : []; }
+async function bkQSet(pid, q) { if (q.length) await DB.put('state', q, bkQKey(pid)); else await DB.del('state', bkQKey(pid)).catch(() => {}); }
+let bkLaeuft = Promise.resolve();
+function bkSerial(fn) { const p = bkLaeuft.then(fn, fn); bkLaeuft = p.catch(() => {}); return p; } // Übertragungen nacheinander
 async function bkSend(silent) {
   if (rec || recStarting) { if (!silent) toast('Erst die Sprachnotiz beenden'); return; }
   const proj = S.proj, pid = await projPid(proj), link = await bkLink(pid);
   if (!link) return;
-  const rev = S.rev;
   if (!silent) { stopPlay(); $('btnSend').textContent = 'Senden …'; }
+  const gen = S.ps.gen || 0;
   const data = await buildExport(); // ohne Diagnose-Log (Astra F03)
   const body = JSON.stringify(data);
-  const res = await bkPost(link, body);
-  log('bk-senden', { ergebnis: res === 'ok' || res === 'netz' ? res : 'fehler', kb: Math.round(body.length / 1024), stand: data.stand_id });
-  if (res === 'ok') {
-    await DB.del('state', '__bkq__' + pid).catch(() => {});
-    S.bkSent = { pid, rev, t: Date.now() };
-    if (S.rev === rev) markSaved(true);
-    if (!silent) toast('An Blue Tacit gesendet ✓', 2500);
-  } else if (res === 'netz') {
-    await DB.put('state', { body, t: Date.now(), rev }, '__bkq__' + pid);
-    if (!silent) toast('Kein Internet – wird automatisch gesendet, sobald Netz da ist', 4000);
-  } else if (!silent) {
-    modal(`<h2>Nicht gesendet</h2><p>${esc(res)}</p><div class="row"><span class="grow"></span><button class="primary" onclick="closeModal()">OK</button></div>`);
-  }
+  await bkQSet(pid, [...(await bkQ(pid)).filter((x) => x.fehler), { stand_id: data.stand_id, body, gen, t: Date.now() }]);
+  await bkSerial(() => bkFlush(pid, link, silent));
   if (S.proj === proj) await bkRender();
 }
-// Warteschlange: alle wartenden Stände (jedes Projekt) erneut senden
+// Alle wartenden Stände eines Projekts der Reihe nach senden
+async function bkFlush(pid, link, silent) {
+  for (const e of (await bkQ(pid)).filter((x) => !x.fehler)) {
+    const res = await bkPost(link, e.body);
+    log('bk-senden', { ergebnis: res === 'ok' || res === 'netz' ? res : 'fehler', kb: Math.round(e.body.length / 1024), stand: e.stand_id });
+    if (res === 'netz') { if (!silent) toast('Kein Internet – wird automatisch gesendet, sobald Netz da ist', 4000); return; }
+    const q = await bkQ(pid), i = q.findIndex((x) => x.stand_id === e.stand_id);
+    if (res === 'ok') {
+      if (i >= 0) q.splice(i, 1);
+      if (S.ps && S.proj && (await projPid(S.proj)) === pid) { S.ps.bkGen = Math.max(S.ps.bkGen || 0, e.gen || 0); save(); }
+      if (!silent) toast('An Blue Tacit gesendet ✓', 2500);
+    } else {
+      if (i >= 0) q[i].fehler = res;
+      if (!silent) modal(`<h2>Nicht gesendet</h2><p>${esc(res)}</p><div class="row"><span class="grow"></span><button class="primary" onclick="closeModal()">OK</button></div>`);
+    }
+    await bkQSet(pid, q);
+  }
+}
+// Warteschlangen aller Projekte erneut senden (beim Start, wenn Netz zurückkommt)
 async function bkRetry() {
   const keys = (await DB.keys('state').catch(() => [])).filter((k) => typeof k === 'string' && k.startsWith('__bkq__'));
-  for (const k of keys) {
-    const pid = k.slice(7), q = await DB.get('state', k), link = await bkLink(pid);
-    if (!q || !link) continue;
-    const res = await bkPost(link, q.body);
-    log('bk-nachsenden', { ergebnis: res === 'ok' || res === 'netz' ? res : 'fehler' });
-    if (res !== 'netz') await DB.del('state', k);
-    if (res === 'ok' && S.proj && (await projPid(S.proj)) === pid) S.bkSent = { pid, rev: q.rev, t: Date.now() };
-    if (res !== 'ok' && res !== 'netz') toast('Ein wartender Stand wurde nicht angenommen – bitte „Senden“ erneut drücken', 5000);
-  }
+  for (const k of keys) { const pid = k.slice(7), link = await bkLink(pid); if (link) await bkSerial(() => bkFlush(pid, link, true)); }
   if (S.proj) await bkRender();
 }
 window.addEventListener('online', bkRetry);

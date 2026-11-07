@@ -64,11 +64,14 @@
   }
   // Ist der Zielzustand umsetzbar? Quellbereich innerhalb des Clips bzw. gewählten Bereichs. null = ok, sonst Grund
   function checkZiel(shot, z, projektClips) {
+    if (shot.editierbar === false) return 'Shot gesperrt';
+    if (!z || !Number.isInteger(z.src_in) || !(z.src_fps > 0)) return 'Zielangaben ungültig';
     const c = projektClips[z.clip];
     if (!c) return 'Clip nicht im Projekt';
     const n = Math.round((shot.src_out - shot.src_in) * z.src_fps / shot.src_fps);
     let lo = 0, hi = Math.round(c.dur * z.src_fps);
-    if (z.bereich_frames) [lo, hi] = z.bereich_frames;
+    // Shortlist-Bereich nur innerhalb der echten Clipgrenzen
+    if (z.bereich_frames) { lo = Math.max(lo, z.bereich_frames[0]); hi = Math.min(hi, z.bereich_frames[1]); }
     if (z.src_in < lo || z.src_in + n > hi) return `Quellbereich reicht nicht (${z.src_in}+${n} außerhalb ${lo}–${hi})`;
     return null;
   }

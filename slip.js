@@ -14,17 +14,39 @@ const pv = $('pv'), pvLast = $('pvLast');
  * Proxy-Clips sind klein (2–5 MB) → vor dem Abspielen komplett in den Arbeitsspeicher holen (die letzten 6 bleiben). */
 const MEM = new Map(); // Clip-ID → Blob-URL im Arbeitsspeicher
 async function memUrl(c) {
-  if (MEM.has(c.id)) { const u = MEM.get(c.id); MEM.delete(c.id); MEM.set(c.id, u); return u; }
+  const k = S.proj.id + '|' + c.id;                              // je Projekt + Clip (gleiche Clip-IDs in anderen Projekten, F06)
+  if (MEM.has(k)) { const u = MEM.get(k); MEM.delete(k); MEM.set(k, u); return u; }
   const b = await DB.get('files', S.proj.id + '/' + c.file);
   if (!b) return S.urls.get(c.id);
   const u = URL.createObjectURL(new Blob([await b.arrayBuffer()], { type: 'video/mp4' }));
-  MEM.set(c.id, u);
+  MEM.set(k, u);
   while (MEM.size > 6) { const [k, old] = MEM.entries().next().value; URL.revokeObjectURL(old); MEM.delete(k); }
   return u;
 }
 async function pvLoad(el, c) {
-  if (el.dataset.cid === c.id && el.dataset.mem === '1') return;
-  el.dataset.cid = c.id; el.dataset.mem = '1'; el.src = await memUrl(c);
+  const k = S.proj.id + '|' + c.id;
+  if (el.dataset.key === k) return;
+  el.dataset.key = k; el.dataset.cid = c.id; el.dataset.mem = '1'; el.src = await memUrl(c);
+}
+// Projektwechsel: Vorschau-Videos und Speicher-Cache freigeben (von openProject aufgerufen)
+function pvReset() {
+  for (const el of [pv, pvLast]) { el.pause(); el.removeAttribute('src'); el.load(); delete el.dataset.key; delete el.dataset.cid; }
+  for (const u of MEM.values()) URL.revokeObjectURL(u);
+  MEM.clear();
+}
+
+/* ---------- Alles beenden (F07) ----------
+ * Vor jedem Projekt-, Tab- und Versionswechsel: Slip-Modus, „Im Zusammenhang“, Vorschau und Zeitgeber beenden, solange der alte
+ * Kontext noch gültig ist. Die Sitzungsnummer macht noch laufende asynchrone Fortsetzungen (Laden nach await) ungültig. */
+let SITZUNG = 0;
+function stopAlles() {
+  SITZUNG++;
+  clearInterval(ctxStop); clearTimeout(ctxStart); clearTimeout(slipSeekTimer);
+  if (typeof VE !== 'undefined') { VE.nur = null; pvHide(); }
+  if (SL) {
+    SL = null; document.body.classList.remove('slip'); $('slipBar').classList.add('hidden');
+    pvLast.classList.add('hidden'); $('pvBadge').classList.add('hidden');
+  }
 }
 
 /* ---------- Zielzustand je Shot ---------- */
@@ -39,6 +61,9 @@ function slipGrund(sh) {
   const c = footClipOf(sh);
   if (!c) return 'Clip nicht im Footage-Projekt';
   if (c.missing || !S.urls.has(c.id)) return 'Proxy fehlt auf diesem Gerät';
+  // nur ganzzahlige Verhältnisse (50p in 25p = 2, 25p in 25p = 1); 29,97 in 25 o. ä. nicht annähern (F11)
+  const r = sh.src_fps / S.ver.manifest.fps;
+  if (!(Math.abs(r - Math.round(r)) < 1e-6 && Math.round(r) >= 1)) return `Bildraten ${sh.src_fps}/${S.ver.manifest.fps} nicht unterstützt`;
   return null;
 }
 function auftragOf(sh) {
@@ -54,6 +79,9 @@ async function startSlip() {
   const sh = sg.shot, grund = slipGrund(sh);
   if (grund) { toast('Verschieben nicht möglich: ' + grund, 3500); return; }
   if (rec || recStarting) { toast('Erst die Sprachnotiz beenden'); return; }
+  if (CUT.countdown || CUT.rec) stopCutRec();
+  const sitzung = SITZUNG;
+  if (CUT.mode) toggleCutMode(false);
   stopPlay();
   const c = footClipOf(sh), fps = S.ver.manifest.fps;
   const step = Math.max(1, Math.round(sh.src_fps / fps));         // kleinster sichtbarer Schritt: 1 Sequenzbild
@@ -62,6 +90,7 @@ async function startSlip() {
   document.body.classList.add('slip');
   $('slipBar').classList.remove('hidden');
   await pvLoad(pv, c); await pvLoad(pvLast, c);
+  if (sitzung !== SITZUNG || !SL) return;                          // inzwischen gewechselt
   pv.style.opacity = ''; pv.classList.remove('hidden'); pvLast.classList.remove('hidden'); $('pvBadge').classList.remove('hidden');
   log('slip-start', { shot: sh.id, src_in: SL.srcIn });
   slipResize(); slipUpdate(true);
@@ -76,7 +105,7 @@ function slipSet(v, seek = true) { SL.srcIn = slipSnap(v); slipUpdate(seek); }
 let slipSeekT = 0;
 function slipUpdate(seek) {
   const { sh, srcIn, n } = SL, f = sh.src_fps;
-  $('slipInfo').innerHTML = `<b>Shot ${sh.nr}</b> · ${esc(shotName(sh))} · Inhalt <b>${deltaTxt(sh, srcIn)}</b> · Quelle ${BTV.fmtS(srcIn / f)}–${BTV.fmtS((srcIn + n) / f)} s`
+  $('slipInfo').innerHTML = `<b>Shot ${+sh.nr}</b> · ${esc(shotName(sh))} · Inhalt <b>${deltaTxt(sh, srcIn)}</b> · Quelle ${BTV.fmtS(srcIn / f)}–${BTV.fmtS((srcIn + n) / f)} s`
     + (srcIn <= 0 ? ' · <span class="lock">Clipanfang</span>' : srcIn >= SL.max ? ' · <span class="lock">Clipende</span>' : '');
   slipDraw();
   if (seek) {
@@ -129,7 +158,7 @@ function slipApply() {
   S.state.ereignisse = S.state.ereignisse || [];
   S.state.ereignisse.push({ change_id: 'c-' + uid(), shot: sh.id, typ: 'slip', ziel: z, t: Date.now() });
   log('slip', { shot: sh.id, von: SL.start, nach: srcIn });
-  slipClose(); changed(); toast(`Shot ${sh.nr}: Inhalt ${deltaTxt(sh, srcIn)} – übernommen`, 2500);
+  slipClose(); changed(); toast(`Shot ${+sh.nr}: Inhalt ${deltaTxt(sh, srcIn)} – übernommen`, 2500);
 }
 function slipClose() {
   SL = null; document.body.classList.remove('slip'); $('slipBar').classList.add('hidden');
@@ -139,7 +168,7 @@ function slipClose() {
 function resetShot(sh) {
   S.state.ereignisse = S.state.ereignisse || [];
   S.state.ereignisse.push({ change_id: 'c-' + uid(), shot: sh.id, typ: 'reset', t: Date.now() });
-  log('slip-reset', { shot: sh.id }); changed(); toast(`Shot ${sh.nr} zurückgesetzt`, 2000);
+  log('slip-reset', { shot: sh.id }); changed(); toast(`Shot ${+sh.nr} zurückgesetzt`, 2000);
 }
 
 /* Gesten auf dem Streifen: ziehen = Inhalt verschieben (nach links ziehen = späterer Inhalt) */
@@ -161,12 +190,11 @@ $('slipOk').onclick = () => SL && slipApply();
 $('slipPlay').onclick = () => SL && playContext(SL.sh, SL.srcIn);
 window.addEventListener('resize', () => SL && slipResize());
 document.addEventListener('keydown', (e) => {
-  if (!SL) return;
-  const k = e.key;
-  if (k === 'ArrowLeft') slipSet(SL.srcIn - SL.step); else if (k === 'ArrowRight') slipSet(SL.srcIn + SL.step);
-  else if (k === 'Enter') slipApply(); else if (k === 'Escape') $('slipCancel').onclick();
-  else if (k === ' ') playContext(SL.sh, SL.srcIn);
-  e.preventDefault(); e.stopImmediatePropagation();
+  if (!SL || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  const k = e.key, f = { ArrowLeft: () => slipSet(SL.srcIn - SL.step), ArrowRight: () => slipSet(SL.srcIn + SL.step),
+    Enter: () => slipApply(), Escape: () => $('slipCancel').onclick(), ' ': () => playContext(SL.sh, SL.srcIn) }[k];
+  if (!f) return;                                                  // andere Tasten (Tab …) normal weiterreichen (F15)
+  f(); e.preventDefault(); e.stopImmediatePropagation();
 }, true);
 
 /* ---------- Vorschau: Proxy-Bild über der Version in geänderten Shots ----------
@@ -188,10 +216,12 @@ function veStart(t) {
   veListen();
 }
 async function veVorbereiten(target) {
+  const sitzung = SITZUNG;
   VE.cur = target; VE.gestartet = 0; VE.versuche = 0; VE.win = []; VE.off = null; veShow(false);
   if (!pv.paused) pv.pause();
   pv.muted = true; pv.classList.remove('hidden');
   VE.laedt = true; await pvLoad(pv, footClipOf(target.sh)); VE.laedt = false;
+  if (sitzung !== SITZUNG) { VE.cur = null; pv.pause(); }
 }
 function onMain(now, m) {
   if (veIds) veIds[0] = video.requestVideoFrameCallback(onMain);
@@ -204,7 +234,8 @@ function mainStep(m) {
   const ctxZ = (SL && SL.ctx) || VE.nur;                          // „Im Zusammenhang“: nur dieser Shot
   const list = ctxZ ? [ctxZ] : changedShots().map((sh) => ({ sh, srcIn: effSrcIn(sh) }));
   const target = list.find((z) => t >= z.sh.v_in / fps - 2.6 && t < z.sh.v_out / fps) || null;
-  if ((target && target.sh) !== (VE.cur && VE.cur.sh)) {
+  const zk = (z) => (z ? z.sh.id + '@' + z.srcIn : null);
+  if (zk(target) !== zk(VE.cur)) {
     if (VE.cur) pv.pause();
     if (target) veVorbereiten(target); else { VE.cur = null; veShow(false); }
     return;
@@ -215,13 +246,15 @@ function mainStep(m) {
   const startAb = Math.max(vIn - 2.1, vIn - VE.cur.srcIn / VE.cur.sh.src_fps - VE.vorhalt + 0.02);
   if (!VE.gestartet && t >= startAb) veStart(t);
   const inShot = t >= vIn - 0.5 / fps && t < vOut - 0.5 / fps;
-  veShow(inShot && VE.off !== null && Math.abs(VE.off) <= 1.5);
+  const frisch = performance.now() - (VE.bildAt || 0) < 150 && !pv.seeking && !pv.paused && pv.readyState >= 2;   // F08
+  veShow(inShot && frisch && VE.off !== null && Math.abs(VE.off) <= 1.5);
 }
 function onPV(now, m) {
   if (veIds) veIds[1] = pv.requestVideoFrameCallback(onPV);
   VE.rvfcPV = performance.now(); pvStep(m);
 }
 function pvStep(m) {
+  if (m.mediaTime !== VE.letzteMedia) { VE.letzteMedia = m.mediaTime; VE.bildAt = performance.now(); }
   if (!VE.cur || !VE.aMeta || video.paused || !VE.gestartet) { VE.off = null; return; }
   const fps = veFps();
   const aT = VE.aMeta.t + (m.expectedDisplayTime - VE.aMeta.d) / 1000 * video.playbackRate;
@@ -256,7 +289,7 @@ setInterval(() => {
 }, 40);
 video.addEventListener('pause', () => { if (VE.cur) { pv.pause(); VE.gestartet = 0; veShow(false); } });
 // Shot mit 2,5 s Vor- und 1 s Nachlauf spielen (im Slip-Modus mit dem Entwurf, sonst mit dem wirksamen Zielzustand)
-let ctxStop = null;
+let ctxStop = null, ctxStart = null;
 async function playContext(sh, srcIn) {
   const fps = S.ver.manifest.fps, c = S.clips[0], fc = footClipOf(sh);
   if (SL) SL.ctx = { sh, srcIn }; else VE.nur = { sh, srcIn };
@@ -265,7 +298,8 @@ async function playContext(sh, srcIn) {
   await pvLoad(pv, fc);
   if (pv.readyState < 1) await new Promise((r) => { pv.addEventListener('loadedmetadata', r, { once: true }); setTimeout(r, 3000); });
   S.T = c.s + Math.max(0, sh.v_in / fps - 2.5); showFrame(true);   // 2,5 s Vorlauf: Proxy schwingt vor dem Shot ein
-  setTimeout(() => play(), 120);
+  const sitzung = SITZUNG;
+  clearTimeout(ctxStart); ctxStart = setTimeout(() => { if (sitzung === SITZUNG) play(); }, 120);
   clearInterval(ctxStop);
   let lief = false;
   ctxStop = setInterval(() => {
@@ -304,6 +338,6 @@ function changesHtml() {
   const list = BTV.auftraege(S.ver.manifest, S.state.ereignisse || []).filter((a) => !a.fehler);
   if (!list.length) return '';
   return `<div class="list-sub">Änderungen (${list.length})</div>` + list.map((a) => `<div class="sel-item chg" data-shot="${esc(a.shot)}">
-    <span class="dot" style="background:#f2c14e"></span><div class="t"><div class="l1">✎ Shot ${a.nr} · ${a.typ === 'slip' ? 'Inhalt ' + (a.delta_s >= 0 ? '+' : '−') + BTV.fmtS(Math.abs(a.delta_s)) + ' s' : 'getauscht'}</div>
+    <span class="dot" style="background:#f2c14e"></span><div class="t"><div class="l1">✎ Shot ${+a.nr} · ${a.typ === 'slip' ? 'Inhalt ' + (a.delta_s >= 0 ? '+' : '−') + BTV.fmtS(Math.abs(a.delta_s)) + ' s' : 'getauscht'}</div>
     <div class="l2">${esc(a.marker)}</div></div></div>`).join('');
 }
