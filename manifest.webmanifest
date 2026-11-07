@@ -1,6 +1,6 @@
 {
-  "name": "Burning Balls",
-  "short_name": "Burning Balls",
+  "name": "Framepoint by Blue Tacit",
+  "short_name": "Framepoint",
   "description": "Footage sichten und In/Out-Auswahl für die Bluetacit-Pipeline",
   "start_url": "./",
   "scope": "./",

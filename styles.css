@@ -51,7 +51,10 @@ input[type=text], textarea { font: inherit; color: var(--text); background: var(
 .hero { position: relative; border-radius: 22px; overflow: hidden; min-height: 240px; margin-bottom: 18px;
   background: radial-gradient(120% 140% at 85% 10%, #ff9f0a55 0%, transparent 55%), linear-gradient(160deg, #2a1a0c, #0b0b0d 70%);
   background-size: cover; background-position: center; display: flex; align-items: flex-end; }
-.hero.has-img { background-image: linear-gradient(180deg, transparent 35%, rgba(0,0,0,.78)), url("hero.jpg"); }
+.hero.has-img { background-image: linear-gradient(90deg, rgba(0,0,0,.88) 0%, rgba(0,0,0,.55) 42%, transparent 70%), url("hero.jpg");
+  background-position: right center; min-height: 300px; }
+.hero-title { color: #fff; }
+.hero-kicker { color: #4da3ff !important; }
 .hero-txt { padding: 20px 22px; }
 .hero-logo { display: block; width: min(220px, 45vw); height: auto; margin-bottom: 14px; filter: drop-shadow(0 2px 6px #000a); }
 .hero-kicker { font-size: 12px; text-transform: uppercase; letter-spacing: .12em; color: #ffd28a; font-weight: 600; }

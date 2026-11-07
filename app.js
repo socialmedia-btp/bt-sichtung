@@ -1,4 +1,4 @@
-/* Burning Balls – Footage-Auswahl auf Tablet/PC (Bluetacit).
+/* Framepoint (ehem. Burning Balls) – Footage-Auswahl und Feedback auf Tablet/PC (Blue Tacit).
  * Projekt = Ordner aus prepare.py (projekt.json + Proxies + Filmstreifen), einmal importiert → IndexedDB.
  * Zeiten: "real" = Sekunden Ortszeit (inkl. Spur-Versatz), "disp" = Timeline-Position mit gekürzten Lücken.
  * Auswahl-In/Out werden relativ zum Clip gespeichert (Sekunden im Original), damit Versatz-Änderungen sie nicht verschieben.
@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v3.4f';
+const APP_VERSION = 'v3.5';
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
 
@@ -129,7 +129,7 @@ async function importFiles(fileList, dirHandle) {
   let meta;
   try { meta = JSON.parse(await pj.text()); } catch { toast('projekt.json ist nicht lesbar'); return; }
   if (meta.format === 'bt-sichtung-auswahl') { openSaveFileFromHome(pj); return; }
-  if (meta.format !== 'bt-sichtung') { toast('Keine Burning-Balls-Projektdatei'); return; }
+  if (meta.format !== 'bt-sichtung') { toast('Keine Framepoint-Projektdatei'); return; }
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
 
   // gleicher Projektname = dasselbe Projekt (auch wenn prepare.py es neu erzeugt hat) -> ergänzen statt verdoppeln
@@ -1305,7 +1305,7 @@ async function saveFile() {
 }
 async function readSaveFile(f) {
   let d; try { d = JSON.parse(await f.text()); } catch { toast('Datei nicht lesbar'); return null; }
-  if (d.format !== 'bt-sichtung-auswahl') { toast('Keine Burning-Balls-Speicherdatei'); return null; }
+  if (d.format !== 'bt-sichtung-auswahl') { toast('Keine Framepoint-Speicherdatei'); return null; }
   return d;
 }
 async function openSaveFile(f) {
@@ -1373,7 +1373,7 @@ function help() {
     <li><b>⛶ Vollbild</b>: Video bildschirmfüllend, Timeline durchsichtig darüber. <b>•••</b> klappt die Knöpfe aus. Aufs Video tippen = Play/Pause.</li>
     <li>Am PC: Leertaste = Play, ←/→ = ±1 Bild, Shift+←/→ = ±1 s, M = Marker, F = Vollbild, Strg+Z = Rückgängig.</li>
     <li>Alles wird automatisch auf diesem Gerät gespeichert. <b>Speichern</b> erstellt eine Datei mit deinem Stand; mit <b>Öffnen</b> machst du damit weiter – auch auf einem anderen Gerät, ohne Internet. Die Datei bekommt auch Claude.</li>
-  </ul><p class="hint">Burning Balls ${APP_VERSION}</p>
+  </ul><p class="hint">Framepoint ${APP_VERSION} · Blue Tacit Productions</p>
   <div class="row"><button id="mLog">Log ansehen</button><button onclick="location.href='labor/sync.html'">Sync-Test (Labor)</button><span class="grow"></span><button class="primary" onclick="closeModal()">OK</button></div>`,
   (b) => { b.querySelector('#mLog').onclick = showLog; });
 }
@@ -1450,8 +1450,8 @@ function showLog() {
     b.querySelector('#lLive').onclick = () => { S.liveLog = !S.liveLog; $('liveLog').classList.toggle('hidden', !S.liveLog); renderLiveLog(); closeModal(); };
     b.querySelector('#lShare').onclick = () => {
       const d = new Date();
-      const name = `burningballs_log_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.txt`;
-      const file = new File([`Burning Balls ${APP_VERSION}\n${navigator.userAgent}\n\n` + LOG.map(logLine).join('\n')], name, { type: 'text/plain' });
+      const name = `framepoint_log_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.txt`;
+      const file = new File([`Framepoint ${APP_VERSION}\n${navigator.userAgent}\n\n` + LOG.map(logLine).join('\n')], name, { type: 'text/plain' });
       if (matchMedia('(pointer: coarse)').matches && navigator.canShare && navigator.canShare({ files: [file] })) navigator.share({ files: [file], title: name }).catch(() => {});
       else { const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = name; a.click(); }
     };
@@ -1560,7 +1560,7 @@ document.addEventListener('visibilitychange', () => {
   if (oldLog && oldLog.length) LOG.unshift(...oldLog.slice(-LOG_MAX + 50));
   log('app-start', { v: APP_VERSION, ua: navigator.userAgent.slice(0, 120), standalone: !!navigator.standalone || matchMedia('(display-mode: standalone)').matches });
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
-  $('appVer').textContent = `Burning Balls ${APP_VERSION}`;
+  $('appVer').textContent = `Framepoint ${APP_VERSION}`;
   await showHome();
   { const hi = new Image(); hi.onload = () => $('hero').classList.add('has-img'); hi.src = 'hero.jpg'; }
   // ?import=<Pfad>/ lädt einen Projektordner vom selben Server (Testserver am PC, ohne Dateiauswahl)
