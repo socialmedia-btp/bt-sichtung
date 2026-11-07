@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.0c';
+const APP_VERSION = 'v4.1';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -116,6 +116,7 @@ const COM_H = 28;  // Kommentar-Zeile: antippen = Marker + Sprachnotiz am Abspie
 async function showHome() {
   if (rec || recStarting) { toast('Erst die Sprachnotiz beenden'); return; }
   stopPlay();
+  if (S.proj && S.dirty && !$('editor').classList.contains('hidden') && (await bkLink(await projPid(S.proj)))) await bkSend(true);
   await flushSave(); if (S.state) await save(true);
   S.logPid = null;
   $('editor').classList.add('hidden'); $('home').classList.remove('hidden');
@@ -236,7 +237,7 @@ async function openProject(id) {
   $('tabs').classList.toggle('hidden', p.meta.kind === 'version');
   const vOk = S.ps.tab === 'edit' && S.ps.versions.some((v) => v.version_id === S.ps.activeVersion);
   await enterContext(vOk ? 'edit' : 'shortlist', vOk ? S.ps.activeVersion : null);
-  markSaved(true); ensureStandFile();
+  markSaved(true); ensureStandFile(); bkRender();
   log('projekt-offen', { name: p.meta.name, clips: S.footClips.length, auswahl: S.ps.shortlist.selections.length, versionen: S.ps.versions.length, tab: S.ps.tab });
 }
 
@@ -1509,6 +1510,7 @@ const saveName = (proj = S.proj) => proj.meta.name.replace(/[^\w-]+/g, '_') + '_
 function markSaved(saved) {
   S.dirty = !saved;
   $('btnSave').textContent = saved ? 'Speichern' : 'Speichern •';
+  if (!saved && S.bkSent && $('btnSend').textContent === 'Gesendet ✓') $('btnSend').textContent = 'Senden';
 }
 async function saveFile() {
   if (rec || recStarting) { toast('Erst die Sprachnotiz beenden'); return; }
@@ -1998,6 +2000,91 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) { stopPlay(); save(true); flushLog(); }
 });
 
+/* ---------- Briefkasten: Stand ohne Dialog an Blue Tacit senden ----------
+ * Einrichtung per Link …/bt-sichtung/?bk=<Schlüssel> (je Kunde/Gerät ein Schlüssel, nur Schreiben). Der Schlüssel gehört zu
+ * genau einem Projekt (project_id). „Senden“ schickt den kompletten Stand (bt-stand, ohne Diagnose-Log) an den Briefkasten;
+ * Roberts PC holt ihn ab, legt ihn in OneDrive ab und transkribiert die Sprachnotizen (sichtung/briefkasten_abholen.py).
+ * Ohne Netz bleibt der Stand in einer Warteschlange und wird beim nächsten Öffnen / sobald wieder Netz da ist gesendet. */
+const BK_URL_DEFAULT = 'https://framepoint-briefkasten.bluetacit.workers.dev';
+const bkOk = (u) => /^https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev$/i.test(u) || /^http:\/\/localhost:\d+$/.test(u);
+const bkLink = async (pid) => (pid ? DB.get('state', '__bk__' + pid).catch(() => null) : null);
+async function bkSetup(key, url) {
+  url = url && bkOk(url) ? url : BK_URL_DEFAULT;
+  let r;
+  try { r = await (await fetch(`${url}/v1/link?k=${encodeURIComponent(key)}`)).json(); }
+  catch { toast('Briefkasten nicht erreichbar – Link später noch einmal öffnen', 5000); log('bk-setup-netz'); return; }
+  if (!r.ok) { toast('Dieser Senden-Link ist ungültig oder gesperrt', 5000); log('bk-setup-abgelehnt'); return; }
+  await DB.put('state', { key, url, name: r.name, projekt: r.projekt, project_id: r.project_id, eingerichtet: Date.now() }, '__bk__' + r.project_id);
+  log('bk-eingerichtet', { projekt: r.projekt, name: r.name });
+  modal(`<h2>Senden eingerichtet</h2><p>Für <b>${esc(r.projekt)}</b> (${esc(r.name)}): Mit <b>„Senden“</b> geht dein Stand – Kommentare, Bewertungen und
+    Sprachnotizen – direkt an Blue Tacit. Kein Speichern-Dialog nötig.</p>
+    <p class="hint">Ohne Internet merkt sich die App den Stand und sendet ihn automatisch nach.</p>
+    <div class="row"><span class="grow"></span><button class="primary" onclick="closeModal()">OK</button></div>`);
+  if (S.proj && (await projPid(S.proj)) === r.project_id) bkRender();
+}
+async function bkRender() {
+  const b = $('btnSend'); if (!S.proj) return;
+  const pid = await projPid(S.proj), link = await bkLink(pid);
+  b.classList.toggle('hidden', !link);
+  $('btnSave').classList.toggle('primary', !link);
+  if (!link) return;
+  const q = await DB.get('state', '__bkq__' + pid).catch(() => null);
+  const st = S.bkSent && S.bkSent.pid === pid ? S.bkSent : null;
+  b.textContent = q ? 'Senden ⏳' : st && st.rev === S.rev ? 'Gesendet ✓' : 'Senden';
+  b.title = q ? 'Wartet auf Internet – wird automatisch nachgesendet' : st ? `Zuletzt gesendet ${new Date(st.t).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}` : `An Blue Tacit senden (${link.name})`;
+}
+// Ein Stand-JSON an den Briefkasten. Rückgabe: 'ok' | 'netz' (→ Warteschlange) | Fehlertext (endgültig)
+async function bkPost(link, body) {
+  let r;
+  try { r = await fetch(`${link.url}/v1/stand?k=${encodeURIComponent(link.key)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body }); }
+  catch { return 'netz'; }
+  if (r.ok) return 'ok';
+  const j = await r.json().catch(() => ({}));
+  if (r.status >= 500 || r.status === 429) return 'netz';
+  if (j.fehler === 'zu_gross') return 'Der Stand ist zu groß für den Briefkasten (viele lange Sprachnotizen). Bitte über „Speichern“ als Datei schicken.';
+  if (j.fehler === 'veraltet') return 'Im Briefkasten liegt schon ein neuerer Stand (z. B. von einem anderen Gerät). Dieser ältere Stand wurde nicht gesendet.';
+  return 'Senden abgelehnt: ' + (j.fehler || r.status);
+}
+async function bkSend(silent) {
+  if (rec || recStarting) { if (!silent) toast('Erst die Sprachnotiz beenden'); return; }
+  const proj = S.proj, pid = await projPid(proj), link = await bkLink(pid);
+  if (!link) return;
+  const rev = S.rev;
+  if (!silent) { stopPlay(); $('btnSend').textContent = 'Senden …'; }
+  const data = await buildExport(); // ohne Diagnose-Log (Astra F03)
+  const body = JSON.stringify(data);
+  const res = await bkPost(link, body);
+  log('bk-senden', { ergebnis: res === 'ok' || res === 'netz' ? res : 'fehler', kb: Math.round(body.length / 1024), stand: data.stand_id });
+  if (res === 'ok') {
+    await DB.del('state', '__bkq__' + pid).catch(() => {});
+    S.bkSent = { pid, rev, t: Date.now() };
+    if (S.rev === rev) markSaved(true);
+    if (!silent) toast('An Blue Tacit gesendet ✓', 2500);
+  } else if (res === 'netz') {
+    await DB.put('state', { body, t: Date.now(), rev }, '__bkq__' + pid);
+    if (!silent) toast('Kein Internet – wird automatisch gesendet, sobald Netz da ist', 4000);
+  } else if (!silent) {
+    modal(`<h2>Nicht gesendet</h2><p>${esc(res)}</p><div class="row"><span class="grow"></span><button class="primary" onclick="closeModal()">OK</button></div>`);
+  }
+  if (S.proj === proj) await bkRender();
+}
+// Warteschlange: alle wartenden Stände (jedes Projekt) erneut senden
+async function bkRetry() {
+  const keys = (await DB.keys('state').catch(() => [])).filter((k) => typeof k === 'string' && k.startsWith('__bkq__'));
+  for (const k of keys) {
+    const pid = k.slice(7), q = await DB.get('state', k), link = await bkLink(pid);
+    if (!q || !link) continue;
+    const res = await bkPost(link, q.body);
+    log('bk-nachsenden', { ergebnis: res === 'ok' || res === 'netz' ? res : 'fehler' });
+    if (res !== 'netz') await DB.del('state', k);
+    if (res === 'ok' && S.proj && (await projPid(S.proj)) === pid) S.bkSent = { pid, rev: q.rev, t: Date.now() };
+    if (res !== 'ok' && res !== 'netz') toast('Ein wartender Stand wurde nicht angenommen – bitte „Senden“ erneut drücken', 5000);
+  }
+  if (S.proj) await bkRender();
+}
+window.addEventListener('online', bkRetry);
+$('btnSend').onclick = () => bkSend(false);
+
 /* ---------- Start ---------- */
 (async () => {
   await DB.open();
@@ -2011,6 +2098,14 @@ document.addEventListener('visibilitychange', () => {
   // ?import=<Pfad>/ lädt einen Projektordner vom selben Server (Testserver am PC, ohne Dateiauswahl)
   const q = new URLSearchParams(location.search);
   const imp = q.get('import');
+  // ?bk=<Schlüssel>[&bkurl=…]: Senden an Blue Tacit für ein Projekt einrichten
+  if (q.get('bk')) {
+    const bkurl = q.get('bkurl');
+    if (bkurl && bkOk(bkurl)) { try { localStorage.setItem('bk-url', bkurl); } catch { /* egal */ } }
+    if (!imp) history.replaceState(null, '', location.pathname);
+    await bkSetup(q.get('bk'), bkurl || (() => { try { return localStorage.getItem('bk-url'); } catch { return null; } })());
+  }
+  bkRetry();
   if (imp && !/^[a-z]+:|^\/\//i.test(imp)) { // nur Ordner derselben Seite
     history.replaceState(null, '', location.pathname);
     const base = imp.endsWith('/') ? imp : imp + '/';
@@ -2022,7 +2117,9 @@ document.addEventListener('visibilitychange', () => {
     await importFiles([...files, ...lazy]);
     // &version=<Pfad zur JSON> (mehrfach möglich): Version gleich mit importieren – für Tests ohne Dateiauswahl
     const vers = q.getAll('version');
-    const p = (await DB.all('projects')).find((x) => x.meta.name === meta.name);
+    const mpid = await projectIdOf(meta);
+    let p = null;
+    for (const x of await DB.all('projects')) if ((await projPid(x)) === mpid) p = x;
     if (p && vers.length) {
       await openProject(p.id);
       for (const vj of vers) {
