@@ -265,3 +265,7 @@ body.slip .fs-mini, body.slip .cutbar { display: none !important; }
 .ts-item .l1 { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ts-item .l2 { color: var(--muted); font-size: 13px; }
 .ts-th { width: 96px; height: 54px; flex: none; border-radius: 6px; background: #2a2e34 no-repeat; }
+
+/* Neue Version zum Laden (Briefkasten) */
+.proj.neu { border: 1.5px solid #0078FF; background: #0078ff14; }
+#verLaden .proj { margin: 8px 0; }

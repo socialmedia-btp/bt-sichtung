@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.6b';
+const APP_VERSION = 'v4.7';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -164,6 +164,81 @@ async function showHome() {
   if (navigator.storage && navigator.storage.estimate) {
     const e = await navigator.storage.estimate();
     $('storageInfo').textContent = `Speicher dieser App: ${fmtGB(e.usage || 0)} belegt, ca. ${fmtGB(e.quota || 0)} verfügbar.`;
+  }
+  bkAngeboteZeigen();
+}
+
+/* ---------- Versionen laden statt herunterladen + importieren (Robert 07.11.) ----------
+ * Robert stellt eine Version mit sichtung/version_teilen.py in den Briefkasten. Wer den Framepoint-Link des Projekts geöffnet
+ * hat, sieht sie auf der Startseite (und im Versionen-Blatt) mit „Laden“: Video + version.json kommen direkt vom Briefkasten,
+ * danach läuft genau der normale Import (Prüfsumme, Länge, Projektzuordnung). Keine Dateiauswahl – die stürzte am iPad ab. */
+async function bkAlleLinks() {
+  const ks = (await DB.keys('state')).filter((k) => String(k).startsWith('__bk__'));
+  return (await Promise.all(ks.map((k) => DB.get('state', k)))).filter((l) => l && l.key && l.url);
+}
+async function exportsAufGeraet(pid) {
+  for (const p of await DB.all('projects')) {
+    if ((await projPid(p)) !== pid) continue;
+    const st = await DB.get('state', p.id);
+    return new Set(((st && st.versions) || []).map((v) => v.export_id));
+  }
+  return new Set();
+}
+// Versionen im Briefkasten, die auf diesem Gerät noch fehlen: [{link, v}]
+async function bkOffen(nurPid) {
+  const out = [];
+  for (const link of await bkAlleLinks()) {
+    if (nurPid && link.project_id !== nurPid) continue;
+    let r;
+    try { r = await (await fetch(`${link.url}/v1/versionen?k=${encodeURIComponent(link.key)}`)).json(); } catch { continue; }
+    if (!r || !r.ok) continue;
+    const da = await exportsAufGeraet(link.project_id);
+    for (const v of r.versionen || []) if (!da.has(v.export_id)) out.push({ link, v });
+  }
+  return out;
+}
+const angebotHtml = ({ v }, i) => `<div class="proj neu"><div class="info"><div class="name">📥 ${esc(v.sequenz)}</div>
+  <div class="meta">${esc(v.projekt || '')} · neue Version zum Prüfen · ${durTxt(v.dauer || 0)} · ${(v.bytes / 1e6).toFixed(0)} MB</div></div>
+  <button class="primary" data-laden="${i}">Laden</button></div>`;
+let angebotLauf = 0;
+async function bkAngeboteZeigen() {
+  const box = $('bkAngebote'); if (!box) return;
+  const lauf = ++angebotLauf;
+  const liste = await bkOffen().catch(() => []);
+  if (lauf !== angebotLauf || $('home').classList.contains('hidden')) return;
+  box.innerHTML = liste.map(angebotHtml).join('');
+  box.querySelectorAll('[data-laden]').forEach((b) => b.onclick = () => bkLaden(liste[+b.dataset.laden]));
+  if (liste.length) log('versionen-angeboten', { n: liste.length });
+}
+async function bkLaden({ link, v }) {
+  const q = (x) => `k=${encodeURIComponent(link.key)}&e=${encodeURIComponent(v.export_id)}`;
+  log('version-laden-start', { export: v.export_id, mb: +(v.bytes / 1e6).toFixed(1) });
+  modal(`<h2>${esc(v.sequenz)}</h2><div class="progress"><div id="ldBar" style="width:2%"></div></div><p id="ldTxt" class="hint">Version wird geladen …</p>
+    <p class="hint">Bitte die App offen lassen, bis das Video da ist.</p>`);
+  try {
+    const mr = await fetch(`${link.url}/v1/version/manifest?${q()}`);
+    if (!mr.ok) throw new Error((await mr.json().catch(() => ({}))).fehler || 'Versionsdatei nicht erreichbar');
+    const man = await mr.text();
+    const vr = await fetch(`${link.url}/v1/version/video?${q()}`);
+    if (!vr.ok || !vr.body) throw new Error('Video nicht erreichbar');
+    const total = +vr.headers.get('content-length') || v.bytes, rd = vr.body.getReader(), teile = [];
+    let n = 0;
+    for (;;) {
+      const { done, value } = await rd.read();
+      if (done) break;
+      teile.push(value); n += value.length;
+      const bar = $('ldBar'), txt = $('ldTxt');
+      if (bar) bar.style.width = Math.max(2, Math.round(n / total * 100)) + '%';
+      if (txt) txt.textContent = `Version wird geladen … ${(n / 1e6).toFixed(0)} von ${(total / 1e6).toFixed(0)} MB`;
+    }
+    if (n !== total) throw new Error(`Verbindung abgebrochen (${(n / 1e6).toFixed(0)} von ${(total / 1e6).toFixed(0)} MB) – bitte noch einmal „Laden“`);
+    log('version-geladen', { export: v.export_id, mb: +(n / 1e6).toFixed(1) });
+    const base = v.datei.replace(/\.[^.]+$/, '');
+    await importKundenVersion([new File(teile, v.datei, { type: 'video/mp4' }), new File([man], base + '.json', { type: 'application/json' })]);
+  } catch (e) {
+    log('version-laden-fehler', { export: v.export_id, msg: String(e && e.message || e) });
+    modal(`<h2>Laden nicht möglich</h2><p>${esc(e && e.message || e)}</p><p class="hint">Prüfe die Internetverbindung und versuche es noch einmal.</p>
+      <div class="row"><span class="grow"></span><button class="primary" onclick="closeModal()">OK</button></div>`);
   }
 }
 
@@ -571,13 +646,9 @@ video.addEventListener('seeked', () => { if (seekWanted != null && !S.playing) a
 
 function updateNoteTarget() {
   const el = $('noteTarget'); if (!el) return;
-  const cs = S.curSel && sels().includes(S.curSel) ? S.curSel : null;
-  if (S.ver && !cs) {
-    const sg = shotNow();
-    if (sg) { el.innerHTML = `🎙 Notiz zu: <b>Shot ${+sg.shot.nr}</b> ${esc(shotName(sg.shot))}`; el.classList.add('on'); return; }
-  }
+  const cs = amZeiger(S.curSel) ? S.curSel : null;   // gleiche Regel wie toggleRec (🎙 im Transport)
   const s = cs || selAtPlayhead();
-  if (!s) { el.textContent = '🎙 keine Auswahl hier → wird Marker'; el.classList.remove('on'); return; }
+  if (!s) { el.textContent = '🎙 neue Notiz → Marker an dieser Stelle'; el.classList.remove('on'); return; }
   const L = selLabel(s);
   el.innerHTML = `🎙 Notiz zu: <b>${esc(L.l1.replace(/^.*· /, ''))}</b> ${esc(L.l2.split(' · ').slice(0, 2).join(' · '))}${s.notes.length ? ` · ${s.notes.length} Notiz${s.notes.length > 1 ? 'en' : ''}` : ''}`;
   el.classList.add('on');
@@ -948,7 +1019,7 @@ function renderShotCard(box) {
   const ti = box.querySelector('#shotText');
   ti.oninput = (e) => { const m = shotComment(sh, true); m.text = e.target.value; save(); };
   ti.onchange = () => { const m = shotComment(sh); if (m && !m.text && !m.notes.length) S.state.selections = sels().filter((x) => x !== m); changed(); };
-  box.querySelector('[data-k=rec]').onclick = () => toggleRec();
+  box.querySelector('[data-k=rec]').onclick = () => toggleRec('szene');
   box.querySelectorAll('[data-pn]').forEach((x) => x.onclick = () => playNote(shotComment(sh).notes[+x.dataset.pn]));
   box.querySelectorAll('[data-dn]').forEach((x) => x.onclick = () => { const m = shotComment(sh); m.notes = m.notes.filter((_, i) => i !== +x.dataset.dn); changed(); });
 }
@@ -1011,20 +1082,29 @@ function selAtPlayhead() {
   return hits.find((x) => x.track === S.activeTrack) || hits[0] || null;
 }
 const recBtns = (on) => document.querySelectorAll('[data-act=rec], .rec-scene').forEach((b) => b.classList.toggle('on', on));
-async function toggleRec() {
+// Liegt die Auswahl am Abspielzeiger? (Bereich: zwischen IN und OUT; Marker: höchstens 0,3 s daneben)
+function amZeiger(s) {
+  if (!s || !sels().includes(s)) return false;
+  const [a, b] = selRange(s);
+  return s.kind === 'marker' ? Math.abs(S.T - a) <= 0.3 : S.T >= a && S.T <= b;
+}
+// ziel 'szene' = Kommentar der Szene (Szenenkarte, Kommentar-Zeile); sonst: Auswahl am Abspielzeiger oder neuer Marker an
+// genau dieser Stelle. Früher hing die Notiz an der zuletzt gewählten Auswahl, auch wenn der Zeiger längst woanders stand
+// (Robert 07.11.: Notiz nach IN/OUT außerhalb gesprochen → landete beim Bereich statt als Marker an der Stelle).
+async function toggleRec(ziel) {
   if (rec) { rec.stop(); return; }
   if (recStarting) return;
   recStarting = true;
   stopPlay();
   const ctxObj = S.state; // Ziel-Kontext vor dem ersten await festhalten (F01)
-  let s = S.curSel && sels().includes(S.curSel) ? S.curSel : null;
+  let s = ziel !== 'szene' && amZeiger(S.curSel) ? S.curSel : null;
   const mime = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm'].find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m));
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
   catch (e) { recStarting = false; log('mikro-fehler', { name: e.name, msg: e.message }); toast('Kein Mikrofonzugriff – in den Einstellungen erlauben'); return; }
-  if (!s && S.ver && shotNow()) s = shotComment(shotNow().shot, true); // Edit-Tab: Szene am Abspielzeiger
+  if (!s && ziel === 'szene' && S.ver && shotNow()) s = shotComment(shotNow().shot, true); // Kommentar zur Szene am Abspielzeiger
   if (!s) s = selAtPlayhead();
-  if (!s) { s = addMarker(); toast('Keine Auswahl am Abspielzeiger → Notiz als Marker gespeichert'); }
+  if (!s) { s = addMarker(); toast('Notiz als Marker an dieser Stelle'); }
   S.curSel = s.shot ? null : s; renderSide();
   const target = { pid: S.proj.id, ctx: ctxObj, selId: s.id, t: S.T };
   const chunks = []; const t0 = Date.now();
@@ -1471,7 +1551,7 @@ function endPointer(e) {
   if (g.lpDone) { g = null; requestDraw(); return; }
   if (!g.moved && !g.fine && g.type === 'comment') {
     if (g.marker) { S.curSel = g.marker; log('kommentar-gewaehlt', { id: g.marker.id }); renderSide(); }
-    else if (S.ver && shotNow()) { S.curSel = null; log('kommentar-szene', { pos: +S.T.toFixed(3) }); toggleRec(); }
+    else if (S.ver && shotNow()) { S.curSel = null; log('kommentar-szene', { pos: +S.T.toFixed(3) }); toggleRec('szene'); }
     else { S.curSel = addMarker(); log('kommentar-neu', { pos: +S.T.toFixed(3) }); toggleRec(); }
     g = null; requestDraw(); return;
   }
@@ -2021,6 +2101,7 @@ function versionSheet() {
   modal(`<h2>Versionen</h2>
     <div class="ver-list">${vs.length ? vs.map(row).join('') : '<p class="hint">Noch keine Version in diesem Projekt.</p>'}
     ${w.map((x) => `<div class="ver wait"><div class="info"><div class="name">${esc(x.sequenz || x.version_id)}</div><div class="meta">Stand vorhanden – Video + JSON noch importieren</div></div></div>`).join('')}</div>
+    <div id="verLaden"></div>
     <label class="import-btn"><input id="verInput" type="file" multiple accept=".json,.mp4,application/json,video/mp4"><span>＋ Version importieren</span></label>
     <p class="hint">Im Ordner <b>Versionen</b> das Video <b>und</b> die gleichnamige .json auswählen. Die App prüft, ob beide zusammengehören.</p>
     <div class="row"><span class="grow"></span><button id="mOk">Schließen</button></div>`, (b) => {
@@ -2029,6 +2110,12 @@ function versionSheet() {
     b.querySelectorAll('[data-open]').forEach((x) => x.onclick = () => { closeModal(); enterContext('edit', x.dataset.open); });
     b.querySelectorAll('[data-del]').forEach((x) => x.onclick = () => deleteVersion(S.ps.versions.find((v) => v.version_id === x.dataset.del)));
   });
+  // neue Versionen aus dem Briefkasten (Framepoint-Link dieses Projekts) gleich hier anbieten
+  projPid(S.proj).then((pid) => bkOffen(pid)).then((liste) => {
+    const box = $('verLaden'); if (!box || !liste.length) return;
+    box.innerHTML = liste.map(angebotHtml).join('');
+    box.querySelectorAll('[data-laden]').forEach((x) => x.onclick = () => bkLaden(liste[+x.dataset.laden]));
+  }).catch(() => {});
 }
 function importError(msg, data) {
   log('version-abgelehnt', { grund: msg, ...(data || {}) });
@@ -2237,10 +2324,18 @@ async function bkSetup(key, url) {
   if (!r.ok) { toast('Dieser Senden-Link ist ungültig oder gesperrt', 5000); log('bk-setup-abgelehnt'); return; }
   await DB.put('state', { key, url, name: r.name, projekt: r.projekt, project_id: r.project_id, eingerichtet: Date.now() }, '__bk__' + r.project_id);
   log('bk-eingerichtet', { projekt: r.projekt, name: r.name });
-  modal(`<h2>Senden eingerichtet</h2><p>Für <b>${esc(r.projekt)}</b> (${esc(r.name)}): Mit <b>„Senden“</b> geht dein Stand – Kommentare, Bewertungen und
-    Sprachnotizen – direkt an Blue Tacit. Kein Speichern-Dialog nötig.</p>
+  const offen = await bkOffen(r.project_id).catch(() => []);
+  const neu = offen[offen.length - 1];
+  modal(`<h2>${neu ? 'Dein Video ist bereit' : 'Senden eingerichtet'}</h2>
+    ${neu ? `<p><b>${esc(neu.v.sequenz)}</b> liegt für dich bereit. Tippe auf <b>„Laden“</b> – das Video kommt direkt in Framepoint.</p>` : ''}
+    <p>${neu ? 'Wenn du fertig bist, tippst du auf <b>„Senden“</b>: Dein Stand' : `Für <b>${esc(r.projekt)}</b> (${esc(r.name)}): Mit <b>„Senden“</b> geht dein Stand`} – Kommentare, Bewertungen und
+    Sprachnotizen – ${neu ? 'geht ' : ''}direkt an Blue Tacit.</p>
     <p class="hint">Ohne Internet merkt sich die App den Stand und sendet ihn automatisch nach.</p>
-    <div class="row"><span class="grow"></span><button class="primary" onclick="closeModal()">OK</button></div>`);
+    <div class="row"><span class="grow"></span>${neu ? '<button id="bkLater">Später</button><button id="bkLoad" class="primary">Laden</button>' : '<button class="primary" onclick="closeModal()">OK</button>'}</div>`, (b) => {
+    if (!neu) return;
+    b.querySelector('#bkLater').onclick = () => { closeModal(); bkAngeboteZeigen(); };
+    b.querySelector('#bkLoad').onclick = () => bkLaden(neu);
+  });
   if (S.proj && (await projPid(S.proj)) === r.project_id) bkRender();
 }
 async function bkRender() {
