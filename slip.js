@@ -85,9 +85,9 @@ function slipUpdate(seek) {
     const wait = 60 - (performance.now() - slipSeekT);
     if (wait > 0) { slipSeekTimer = setTimeout(() => SL && slipUpdate(true), wait); return; }
     slipSeekT = performance.now();
-    // Bildmitte ansteuern, damit sicher das richtige Bild erscheint
-    pv.currentTime = (srcIn + SL.step / 2) / f;
-    pvLast.currentTime = (srcIn + n - SL.step / 2) / f;
+    // Mitte des Quellbilds ansteuern, das Premiere im Sequenzbild zeigt (bei 50p in 25p das ERSTE des Bildpaars)
+    pv.currentTime = (srcIn + 0.5) / f;
+    pvLast.currentTime = (srcIn + n - SL.step + 0.5) / f;
   }
 }
 let slipSeekTimer = null;
@@ -195,6 +195,9 @@ async function veVorbereiten(target) {
 }
 function onMain(now, m) {
   if (veIds) veIds[0] = video.requestVideoFrameCallback(onMain);
+  VE.rvfcMain = performance.now(); mainStep(m);
+}
+function mainStep(m) {
   if (!S.ver || !S.playing || (SL && !SL.ctx)) { if (VE.cur) { pv.pause(); VE.cur = null; VE.gestartet = 0; if (!SL) pvHide(); } return; }
   VE.aMeta = { t: m.mediaTime, d: m.expectedDisplayTime };
   const t = m.mediaTime, fps = veFps();
@@ -214,6 +217,9 @@ function onMain(now, m) {
 }
 function onPV(now, m) {
   if (veIds) veIds[1] = pv.requestVideoFrameCallback(onPV);
+  VE.rvfcPV = performance.now(); pvStep(m);
+}
+function pvStep(m) {
   if (!VE.cur || !VE.aMeta || video.paused || !VE.gestartet) { VE.off = null; return; }
   const fps = veFps();
   const aT = VE.aMeta.t + (m.expectedDisplayTime - VE.aMeta.d) / 1000 * video.playbackRate;
@@ -232,11 +238,20 @@ function onPV(now, m) {
 // Bild-Rückrufe gehen verloren, wenn ein Video eine neue Quelle bekommt (WebKit) → bei jedem Start frisch anmelden
 let veIds = null;
 function veListen() {
+  if (!('requestVideoFrameCallback' in HTMLVideoElement.prototype)) return;   // ältere Browser: nur Ersatztakt
   if (veIds) { try { video.cancelVideoFrameCallback(veIds[0]); pv.cancelVideoFrameCallback(veIds[1]); } catch { /* egal */ } }
   veIds = [video.requestVideoFrameCallback(onMain), pv.requestVideoFrameCallback(onPV)];
 }
 veListen();
 video.addEventListener('play', veListen);
+// Ersatztakt: liefert der Browser keine Bild-Rückmeldungen (ausgeblendetes Fenster, Browser ohne requestVideoFrameCallback),
+// läuft die Vorschau über currentTime weiter (ungenauer, aber besser als gar nicht)
+setInterval(() => {
+  if (!S.ver || !S.playing) return;
+  const jetzt = performance.now();
+  if (!(VE.rvfcMain > jetzt - 250)) mainStep({ mediaTime: video.currentTime, expectedDisplayTime: jetzt });
+  if (VE.cur && !pv.paused && !(VE.rvfcPV > jetzt - 250)) pvStep({ mediaTime: pv.currentTime, expectedDisplayTime: jetzt });
+}, 40);
 video.addEventListener('pause', () => { if (VE.cur) { pv.pause(); VE.gestartet = 0; veShow(false); } });
 // Shot mit 2,5 s Vor- und 1 s Nachlauf spielen (im Slip-Modus mit dem Entwurf, sonst mit dem wirksamen Zielzustand)
 let ctxStop = null;
