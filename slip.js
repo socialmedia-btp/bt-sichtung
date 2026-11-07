@@ -169,10 +169,11 @@ function veStart(t) {
   pv.playbackRate = 1; VE.win = []; VE.synced = false; VE.justStarted = true; VE.started = true; VE.lastSeek = performance.now();
   pv.currentTime = Math.max(0, veSrcAt(VE.cur, t + VE.seekLag));
   pv.play().catch(() => {});
+  veListen();
 }
 function veShow(on) { pv.style.opacity = on ? 1 : 0; $('pvBadge').classList.toggle('hidden', !on && !SL); }
 function onMain(now, m) {
-  video.requestVideoFrameCallback(onMain);
+  if (veIds) veIds[0] = video.requestVideoFrameCallback(onMain);
   if (!S.ver || !S.playing || (SL && !SL.ctx)) { if (VE.cur) { pv.pause(); VE.cur = null; VE.started = false; if (!SL) pvHide(); } return; }
   VE.aMeta = { t: m.mediaTime, d: m.expectedDisplayTime };
   const t = m.mediaTime, fps = veFps();
@@ -194,7 +195,7 @@ function onMain(now, m) {
   veShow(inShot && VE.synced);                                   // nicht synchron → Versionsbild bleibt sichtbar
 }
 function onPV(now, m) {
-  pv.requestVideoFrameCallback(onPV);
+  if (veIds) veIds[1] = pv.requestVideoFrameCallback(onPV);
   if (!VE.cur || !VE.aMeta || video.paused || !VE.started) return;
   const fps = veFps();
   const aT = VE.aMeta.t + (m.expectedDisplayTime - VE.aMeta.d) / 1000 * video.playbackRate;
@@ -208,8 +209,14 @@ function onPV(now, m) {
   if (Math.abs(pv.playbackRate - rate) > 0.005) pv.playbackRate = rate;
   VE.synced = VE.synced ? Math.abs(mean) <= 2 : (VE.win.length >= 3 && Math.abs(mean) <= 1);
 }
-video.requestVideoFrameCallback(onMain);
-pv.requestVideoFrameCallback(onPV);
+// Bild-Rückrufe gehen verloren, wenn ein Video eine neue Quelle bekommt (WebKit) → bei jedem Start frisch anmelden
+let veIds = null;
+function veListen() {
+  if (veIds) { try { video.cancelVideoFrameCallback(veIds[0]); pv.cancelVideoFrameCallback(veIds[1]); } catch { /* egal */ } }
+  veIds = [video.requestVideoFrameCallback(onMain), pv.requestVideoFrameCallback(onPV)];
+}
+veListen();
+video.addEventListener('play', veListen);
 // Shot mit 2 s Vor- und 1 s Nachlauf spielen (im Slip-Modus mit dem Entwurf, sonst mit dem wirksamen Zielzustand)
 let ctxStop = null;
 async function playContext(sh, srcIn) {
