@@ -173,7 +173,7 @@ document.addEventListener('keydown', (e) => {
  * Verfahren wie der Sync-Test (labor/sync.html, am iPad gemessen): Proxy startet PRE s vor dem Shot unsichtbar mit gelernter
  * Startverzögerung, wird pro Bild (requestVideoFrameCallback) über das Tempo nachgeführt und erst gezeigt, wenn er über
  * mehrere Bilder ≤ 1 Bild Versatz hat; gesprungen wird nur bei grobem Versatz (> 12 Bilder). */
-const VE = { cur: null, started: false, synced: false, lastSeek: 0, justStarted: false, win: [], seekLag: 0.15, aMeta: null };
+const VE = { versuche: 0, cur: null, started: false, synced: false, lastSeek: 0, justStarted: false, win: [], seekLag: 0.15, aMeta: null };
 function pvHide() { pv.classList.add('hidden'); pv.style.opacity = 0; if (!pv.paused) pv.pause(); VE.cur = null; VE.started = false; VE.synced = false; $('pvBadge').classList.toggle('hidden', !SL); }
 function changedShots() { return (S.vsegs || []).map((x) => x.shot).filter((sh, i, a) => a.indexOf(sh) === i && effZiel(sh) && footClipOf(sh)); }
 const veFps = () => S.ver.manifest.fps;
@@ -199,7 +199,7 @@ function onMain(now, m) {
   const target = list.find((z) => t >= z.sh.v_in / fps - SLIP_PRE - 0.6 && t < z.sh.v_out / fps) || null;
   if ((target && target.sh) !== (VE.cur && VE.cur.sh)) {
     if (VE.cur) pv.pause();
-    VE.cur = target; VE.started = false; VE.synced = false; veShow(false);
+    VE.cur = target; VE.started = false; VE.synced = false; VE.versuche = 0; veShow(false);
     if (target) {
       const c = footClipOf(target.sh);
       pv.muted = true; pv.classList.remove('hidden');
@@ -218,14 +218,20 @@ function onPV(now, m) {
   const fps = veFps();
   const aT = VE.aMeta.t + (m.expectedDisplayTime - VE.aMeta.d) / 1000 * video.playbackRate;
   const off = (m.mediaTime - veSrcAt(VE.cur, aT)) * fps;        // Versatz in Sequenzbildern (+ = Proxy voraus)
-  // Startverzögerung lernen – nur aus plausiblen Messungen (ein noch ladender Proxy lieferte sonst absurde Werte)
-  if (VE.justStarted) { VE.justStarted = false; if (Math.abs(off) < 12) VE.seekLag = clamp(VE.seekLag - off / fps, 0.02, 1.0); }
-  VE.win = VE.win.concat(off).slice(-5);
+  // Tempo bleibt 1 (Tempowechsel lassen den Proxy am iPad jedes Mal kurz stocken, gemessen 07.11.). Korrigiert wird nur
+  // über den Startpunkt: Startverzögerung aus der ersten Messung lernen, bei bleibender Abweichung einmal neu ansetzen.
+  if (VE.justStarted) {
+    VE.justStarted = false;
+    if (Math.abs(off) < 12) VE.seekLag = clamp(VE.seekLag - off / fps, 0.02, 1.0);
+    if (Math.abs(off) > 1.5 && VE.versuche++ < 4) { veStart(aT); return; }          // gleich mit gelernter Verzögerung neu ansetzen
+  }
+  VE.win = VE.win.concat(off).slice(-4);
   const mean = VE.win.reduce((x, y) => x + y, 0) / VE.win.length;
-  if (Math.abs(off) > 12 && performance.now() - VE.lastSeek > 700) { veStart(aT); return; }      // grob daneben → einmal springen
-  const rate = Math.abs(mean) < 0.35 ? 1 : 1 - clamp(mean * (VE.synced ? 0.05 : 0.08), -0.3, 0.3);
-  if (Math.abs(pv.playbackRate - rate) > 0.005) pv.playbackRate = rate;
-  VE.synced = VE.synced ? Math.abs(mean) <= 2 : (VE.win.length >= 3 && Math.abs(mean) <= 1);
+  if (pv.playbackRate !== 1) pv.playbackRate = 1;
+  if (VE.win.length >= 3 && Math.abs(mean) > 1.5 && performance.now() - VE.lastSeek > 900) {
+    VE.versuche = 0; veStart(aT); return;                          // neu ansetzen (lernt beim ersten Bild erneut)
+  }
+  VE.synced = VE.synced ? Math.abs(mean) <= 2 : (VE.win.length >= 2 && Math.abs(mean) <= 1.2);
 }
 // Bild-Rückrufe gehen verloren, wenn ein Video eine neue Quelle bekommt (WebKit) → bei jedem Start frisch anmelden
 let veIds = null;
