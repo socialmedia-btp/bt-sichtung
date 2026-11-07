@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.6';
+const APP_VERSION = 'v4.6a';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -29,19 +29,27 @@ const DB = {
         db.createObjectStore('state');
         db.createObjectStore('notes');
       };
-      r.onsuccess = () => { DB.db = r.result; res(); };
+      r.onsuccess = () => {
+        DB.db = r.result;
+        DB.db.onclose = () => { DB.db = null; };                  // vom Browser geschlossen → beim nächsten Zugriff neu öffnen
+        DB.db.onversionchange = () => { try { DB.db.close(); } catch { /* egal */ } DB.db = null; };
+        res();
+      };
       r.onerror = () => rej(r.error);
     });
   },
+  // Verbindung bei Bedarf (wieder) öffnen: iPad-Chrome meldet beim Öffnen der Dateiauswahl „Seite verlassen“ (pagehide),
+  // danach ist die Verbindung zu (Feedback 07.11.: Auswahl → „Öffnen“ → nichts passiert)
+  bereit() { return DB.db ? Promise.resolve() : (DB.oeffnet = DB.oeffnet || DB.open().finally(() => { DB.oeffnet = null; })); },
   req(store, mode, fn) {
-    const p = new Promise((res, rej) => {
+    const p = DB.bereit().then(() => new Promise((res, rej) => {
       const t = DB.db.transaction(store, mode);
       DB.offen.add(t);
       const r = fn(t.objectStore(store));
       t.oncomplete = () => { DB.offen.delete(t); res(r && r.result); };
       t.onerror = () => { DB.offen.delete(t); rej(t.error); };
       t.onabort = () => { DB.offen.delete(t); rej(t.error || new Error('abgebrochen')); };
-    });
+    }));
     // iPad (Chrome): ein Hintergrund-Tab kann den Speicher sperren → nicht endlos warten, sondern klar melden
     // (große Dateien beim Import brauchen länger; nur kleine Lese-/Schreibvorgänge im Zustand werden überwacht)
     if (store !== 'state' || DB.gross) return p; // während großer Importe warten Zustands-Zugriffe legitim länger
@@ -161,9 +169,18 @@ async function showHome() {
 
 async function importFiles(fileList, dirHandle) {
   const files = [...fileList];
-  const pj = files.find((f) => f.name.toLowerCase().endsWith('.json') && /projekt/i.test(f.name))
-    || files.find((f) => f.name.toLowerCase().endsWith('.json'));
-  if (!pj) { toast('projekt.json fehlt in der Auswahl'); return; }
+  const jsons = files.filter((f) => f.name.toLowerCase().endsWith('.json'));
+  const pj = jsons.find((f) => /projekt/i.test(f.name)) || jsons[0];
+  // Falscher Knopf erwischt? Schnittversion (Video + Versions-JSON) bzw. nur ein Video → als Version importieren
+  if (!dirHandle && !jsons.some((f) => /projekt/i.test(f.name))) {
+    for (const f of jsons) {
+      try { const d = JSON.parse(await f.text()); if (d.format === 'bt-version') { toast('Das ist eine Schnittversion – wird als Version importiert', 3000); return importKundenVersion(files); } } catch { /* nächste */ }
+    }
+    if (!jsons.length && files.length === 1 && /\.(mp4|mov|m4v)$/i.test(files[0].name)) {
+      toast('Nur ein Video gewählt – zum Prüfen von Blue Tacit bitte „Schnittversion prüfen“ und Video + .json wählen', 6000); return;
+    }
+  }
+  if (!pj) { toast('projekt.json fehlt in der Auswahl – für eine Schnittversion „Schnittversion prüfen“ nehmen', 5000); return; }
   let meta;
   try { meta = JSON.parse(await pj.text()); } catch { toast('projekt.json ist nicht lesbar'); return; }
   if (meta.format === 'bt-sichtung-auswahl') { openSaveFileFromHome(pj); return; }
@@ -492,7 +509,7 @@ function renderLiveLog() {
   el.textContent = LOG.slice(-8).map(logLine).join('\n');
 }
 function flushLog() {
-  if (!logDirty || !DB.db) return;
+  if (!logDirty || !DB.gestartet) return;                          // nach „Seite verlassen“ öffnet DB.put die Verbindung neu
   logDirty = false;
   DB.put('state', LOG.slice(-LOG_MAX), '__log__').catch(() => { logDirty = true; });
 }
@@ -1912,12 +1929,19 @@ $('btnSave').onclick = saveFile;
 $('openInput').onchange = (e) => { if (e.target.files[0]) openSaveFile(e.target.files[0]); e.target.value = ''; };
 $('homeOpenInput').onchange = (e) => { if (e.target.files[0]) openSaveFileFromHome(e.target.files[0]); e.target.value = ''; };
 $('btnHelp').onclick = help; $('btnHelp2').onclick = help;
-$('importInput').onchange = (e) => { if (e.target.files.length) importFiles(e.target.files); e.target.value = ''; };
+// Jede Dateiauswahl protokollieren (öffnen / Auswahl angekommen) und Fehler sichtbar machen statt still abzubrechen
+const auswahlLog = (wo, fs) => log('datei-auswahl', { wo, n: fs.length, dateien: fs.slice(0, 6).map((f) => `${f.name} (${(f.size / 1e6).toFixed(1)} MB)`) });
+const sichtbar = (wo) => (e) => { log('import-fehler', { wo, msg: String(e && e.message || e) }); closeModal(); toast(`Import abgebrochen: ${e && e.message || e}`, 6000); };
+for (const id of ['importInput', 'versionInput', 'homeOpenInput', 'openInput']) $(id).addEventListener('click', () => log('auswahl-geoeffnet', { wo: id }));
+$('importInput').onchange = (e) => {
+  const fs = [...e.target.files]; e.target.value = ''; auswahlLog('projekt', fs);
+  if (fs.length) importFiles(fs).catch(sichtbar('projekt'));
+};
 $('versionInput').onchange = (e) => {
-  const fs = [...e.target.files]; e.target.value = '';
+  const fs = [...e.target.files]; e.target.value = ''; auswahlLog('version', fs);
   // Video + .json (bt-version) = Version eines Projekts (auch ohne Footage, z. B. beim Kunden); nur Video = einfaches Prüf-Video
-  if (fs.some((f) => /\.json$/i.test(f.name))) importKundenVersion(fs);
-  else if (fs[0]) importVersion(fs[0]);
+  if (fs.some((f) => /\.json$/i.test(f.name))) importKundenVersion(fs).catch(sichtbar('version'));
+  else if (fs[0]) importVersion(fs[0]).catch(sichtbar('version'));
 };
 // Kunde hat nur Video + JSON: gehört die Version zu einem Projekt auf dem Gerät, dorthin; sonst ein Kunden-Projekt ohne Footage anlegen
 async function importKundenVersion(files) {
@@ -2165,8 +2189,12 @@ window.addEventListener('pagehide', () => {
   for (const t of DB.offen) { try { t.abort(); } catch { /* schon fertig */ } }
   DB.offen.clear();
   try { DB.db && DB.db.close(); } catch { /* egal */ }
+  DB.db = null;                                                    // nächster Zugriff öffnet neu (DB.bereit)
+  log('seite-verlassen');
 });
-window.addEventListener('pageshow', (e) => { if (e.persisted) location.reload(); });
+// Früher: bei Rückkehr neu laden. Das schloss am iPad die gerade offene Dateiauswahl (Bildschirmaufnahme 07.11.) –
+// die Verbindung öffnet sich jetzt bei Bedarf selbst wieder, Neuladen ist nicht mehr nötig.
+window.addEventListener('pageshow', (e) => { if (e.persisted) log('seite-zurueck'); });
 document.addEventListener('visibilitychange', () => {
   log(document.hidden ? 'app-hintergrund' : 'app-vordergrund', vstate());
   if (document.hidden) {
@@ -2270,7 +2298,7 @@ $('btnSend').onclick = () => bkSend(false);
 
 /* ---------- Start ---------- */
 (async () => {
-  await DB.open();
+  await DB.open(); DB.gestartet = true;
   const oldLog = await DB.get('state', '__log__').catch(() => null);
   if (oldLog && oldLog.length) LOG.unshift(...oldLog.slice(-LOG_MAX + 50));
   log('app-start', { v: APP_VERSION, ua: navigator.userAgent.slice(0, 120), standalone: !!navigator.standalone || matchMedia('(display-mode: standalone)').matches });
