@@ -1,6 +1,6 @@
 // App-Hülle offline verfügbar machen. Footage liegt in IndexedDB, nicht im Cache.
 // Bei jeder App-Änderung VERSION hochzählen, damit Geräte die neue Fassung laden.
-const VERSION = 'framepoint-v44a';
+const VERSION = 'framepoint-v44b';
 const FILES = ['./', 'index.html', 'styles.css', 'app.js', 'vertrag.js', 'slip.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'hero.jpg', 'logo.png'];
 
 self.addEventListener('install', (e) => {

@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.4a';
+const APP_VERSION = 'v4.4b';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -17,6 +17,7 @@ const $ = (id) => document.getElementById(id);
 /* ---------- IndexedDB ---------- */
 const DB = {
   db: null,
+  offen: new Set(),   // laufende Transaktionen – werden beim Verlassen der Seite abgebrochen (siehe pagehide)
   open() {
     return new Promise((res, rej) => {
       const r = indexedDB.open('bt-sichtung', 1);
@@ -34,10 +35,11 @@ const DB = {
   req(store, mode, fn) {
     const p = new Promise((res, rej) => {
       const t = DB.db.transaction(store, mode);
+      DB.offen.add(t);
       const r = fn(t.objectStore(store));
-      t.oncomplete = () => res(r && r.result);
-      t.onerror = () => rej(t.error);
-      t.onabort = () => rej(t.error || new Error('abgebrochen'));
+      t.oncomplete = () => { DB.offen.delete(t); res(r && r.result); };
+      t.onerror = () => { DB.offen.delete(t); rej(t.error); };
+      t.onabort = () => { DB.offen.delete(t); rej(t.error || new Error('abgebrochen')); };
     });
     // iPad (Chrome): ein Hintergrund-Tab kann den Speicher sperren → nicht endlos warten, sondern klar melden
     // (große Dateien beim Import brauchen länger; nur kleine Lese-/Schreibvorgänge im Zustand werden überwacht)
@@ -2091,6 +2093,15 @@ async function ensureStandFile() {
   }
 }
 $('modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
+// Chrome/Safari am iPad frieren eine verlassene Seite für „Zurück“ ein – auch mitten in einem Speichervorgang. Die eingefrorene
+// Seite hält den Speicher dann fest und die nächste Seite hängt. Deshalb beim Verlassen offene Vorgänge abbrechen und den
+// Speicher freigeben; kommt man per „Zurück“ wieder (eingefrorene Seite), neu laden.
+window.addEventListener('pagehide', () => {
+  for (const t of DB.offen) { try { t.abort(); } catch { /* schon fertig */ } }
+  DB.offen.clear();
+  try { DB.db && DB.db.close(); } catch { /* egal */ }
+});
+window.addEventListener('pageshow', (e) => { if (e.persisted) location.reload(); });
 document.addEventListener('visibilitychange', () => {
   log(document.hidden ? 'app-hintergrund' : 'app-vordergrund', vstate());
   if (document.hidden) { stopPlay(); save(true); flushLog(); }

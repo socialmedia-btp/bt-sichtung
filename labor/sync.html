@@ -76,6 +76,9 @@ function idb(store, mode, fn) { return new Promise((res, rej) => { const t = db.
   if (!projs.length) { $('proj').style.display = 'none';
     $('info').textContent = 'In diesem Browser liegt kein Projekt → Proxies aus dem OneDrive-Projektordner wählen (alle Dateien) oder Seite aus der App öffnen.'; }
 })();
+// iPad: verlassene Seite wird eingefroren → Speicher freigeben, sonst hängt die App danach (siehe app.js pagehide)
+window.addEventListener('pagehide', () => { try { db && db.close(); } catch { /* egal */ } });
+window.addEventListener('pageshow', (e) => { if (e.persisted) location.reload(); });
 // Quelle der Proxies: App-Speicher (Projekt) oder direkt gewählte Dateien
 let proxSrc = null, ausOrdner = false;   // {meta, blob(name)}; gewählter Ordner hat Vorrang vor dem App-Projekt
 $('proj').onchange = async () => { if (ausOrdner) { setup(); return; } const p = await idb('projects', 'readonly', (o) => o.get($('proj').value));
