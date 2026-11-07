@@ -6,7 +6,7 @@
  * Gemessen am iPad (07.11.2026, Proxies ohne Ton): Proxy hinkt ~0,8 Bild nach → feste Korrektur LEAD. */
 'use strict';
 const SLIP_PRE = 1.2;                 // s: Proxy vor dem Shot unsichtbar anlaufen lassen
-const SLIP_LEAD = 0.8 / 25;           // s: Ausgleich des gemessenen Nachlaufs
+const SLIP_LEAD = 0.8 / 25;           // s: Ausgleich des gemessenen Nachlaufs (Proxy-Bild erscheint ~0,8 Bild zu spät)
 const pv = $('pv'), pvLast = $('pvLast');
 
 /* ---------- Zielzustand je Shot ---------- */
@@ -151,36 +151,59 @@ document.addEventListener('keydown', (e) => {
   e.preventDefault(); e.stopImmediatePropagation();
 }, true);
 
-/* ---------- Vorschau: Proxy-Bild über der Version in geänderten Shots ---------- */
-let PV = null; // {sh, srcIn, c, synced}
-function pvHide() { pv.classList.add('hidden'); pv.style.opacity = 0; if (!pv.paused) pv.pause(); PV = null; $('pvBadge').classList.toggle('hidden', !SL); }
+/* ---------- Vorschau: Proxy-Bild über der Version in geänderten Shots ----------
+ * Verfahren wie der Sync-Test (labor/sync.html, am iPad gemessen): Proxy startet PRE s vor dem Shot unsichtbar mit gelernter
+ * Startverzögerung, wird pro Bild (requestVideoFrameCallback) über das Tempo nachgeführt und erst gezeigt, wenn er über
+ * mehrere Bilder ≤ 1 Bild Versatz hat; gesprungen wird nur bei grobem Versatz (> 12 Bilder). */
+const VE = { cur: null, started: false, synced: false, lastSeek: 0, justStarted: false, win: [], seekLag: 0.15, aMeta: null };
+function pvHide() { pv.classList.add('hidden'); pv.style.opacity = 0; if (!pv.paused) pv.pause(); VE.cur = null; VE.started = false; VE.synced = false; $('pvBadge').classList.toggle('hidden', !SL); }
 function changedShots() { return (S.vsegs || []).map((x) => x.shot).filter((sh, i, a) => a.indexOf(sh) === i && effZiel(sh) && footClipOf(sh)); }
-// läuft bei jeder Wiedergabe im Edit-Tab mit (auch „Im Zusammenhang spielen“)
-function pvTick() {
-  if (!S.ver || !S.playing || SL && !SL.ctx) { if (PV && !SL) pvHide(); return; }
-  const t = video.currentTime, fps = S.ver.manifest.fps;
-  const ctxSh = SL && SL.ctx ? SL.ctx : null;
-  const list = ctxSh ? [ctxSh] : changedShots().map((sh) => ({ sh, srcIn: effSrcIn(sh) }));
-  const cur = list.find(({ sh }) => t >= sh.v_in / fps - SLIP_PRE && t < sh.v_out / fps);
-  if (!cur) { if (PV) pvHide(); return; }
-  const { sh, srcIn } = cur, c = footClipOf(sh), f = sh.src_fps;
-  if (!PV || PV.sh !== sh) {
-    PV = { sh, synced: false };
-    if (pv.dataset.cid !== c.id) { pv.src = S.urls.get(c.id); pv.dataset.cid = c.id; }
-    pv.muted = true; pv.classList.remove('hidden'); pv.style.opacity = 0; pv.playbackRate = 1;
-  }
-  const want = srcIn / f + (t - sh.v_in / fps) + SLIP_LEAD;      // gewünschte Proxy-Zeit
-  if (want < 0) return;
-  if (pv.paused) { pv.currentTime = want; pv.play().catch(() => {}); return; }
-  const diff = pv.currentTime - want;
-  if (Math.abs(diff) > 0.3 && !pv.seeking) { pv.currentTime = want + 0.1; PV.synced = false; return; }
-  pv.playbackRate = clamp(1 - diff * 1.5, 0.9, 1.1);             // sanft nachführen statt springen
-  const inShot = t >= sh.v_in / fps && t < sh.v_out / fps;
-  PV.synced = Math.abs(diff) < 1.5 / fps;
-  pv.style.opacity = inShot && PV.synced ? 1 : 0;                 // nicht synchron → Versionsbild bleibt sichtbar
-  $('pvBadge').classList.toggle('hidden', !(inShot && PV.synced) && !SL);
+const veFps = () => S.ver.manifest.fps;
+const veSrcAt = (z, t) => z.srcIn / z.sh.src_fps + (t - z.sh.v_in / veFps()) + SLIP_LEAD;   // gewünschte Proxy-Zeit
+function veStart(t) {
+  pv.playbackRate = 1; VE.win = []; VE.synced = false; VE.justStarted = true; VE.started = true; VE.lastSeek = performance.now();
+  pv.currentTime = Math.max(0, veSrcAt(VE.cur, t + VE.seekLag));
+  pv.play().catch(() => {});
 }
-setInterval(pvTick, 33); // fester Takt wie playTick (rAF ruht in Hintergrund-Tabs)
+function veShow(on) { pv.style.opacity = on ? 1 : 0; $('pvBadge').classList.toggle('hidden', !on && !SL); }
+function onMain(now, m) {
+  video.requestVideoFrameCallback(onMain);
+  if (!S.ver || !S.playing || (SL && !SL.ctx)) { if (VE.cur) { pv.pause(); VE.cur = null; VE.started = false; if (!SL) pvHide(); } return; }
+  VE.aMeta = { t: m.mediaTime, d: m.expectedDisplayTime };
+  const t = m.mediaTime, fps = veFps();
+  const list = SL && SL.ctx ? [SL.ctx] : changedShots().map((sh) => ({ sh, srcIn: effSrcIn(sh) }));
+  const target = list.find((z) => t >= z.sh.v_in / fps - SLIP_PRE - 0.6 && t < z.sh.v_out / fps) || null;
+  if ((target && target.sh) !== (VE.cur && VE.cur.sh)) {
+    if (VE.cur) pv.pause();
+    VE.cur = target; VE.started = false; VE.synced = false; veShow(false);
+    if (target) {
+      const c = footClipOf(target.sh);
+      if (pv.dataset.cid !== c.id) { pv.src = S.urls.get(c.id); pv.dataset.cid = c.id; }
+      pv.muted = true; pv.classList.remove('hidden');
+    }
+  }
+  if (!VE.cur) return;
+  if (video.paused) { if (!pv.paused) pv.pause(); VE.started = false; VE.synced = false; }
+  else if (!VE.started && t >= VE.cur.sh.v_in / fps - SLIP_PRE) veStart(t);
+  const inShot = t >= VE.cur.sh.v_in / fps - 0.5 / fps && t < VE.cur.sh.v_out / fps - 0.5 / fps;
+  veShow(inShot && VE.synced);                                   // nicht synchron → Versionsbild bleibt sichtbar
+}
+function onPV(now, m) {
+  pv.requestVideoFrameCallback(onPV);
+  if (!VE.cur || !VE.aMeta || video.paused || !VE.started) return;
+  const fps = veFps();
+  const aT = VE.aMeta.t + (m.expectedDisplayTime - VE.aMeta.d) / 1000 * video.playbackRate;
+  const off = (m.mediaTime - veSrcAt(VE.cur, aT)) * fps;        // Versatz in Sequenzbildern (+ = Proxy voraus)
+  if (VE.justStarted) { VE.justStarted = false; VE.seekLag = clamp(VE.seekLag - off / fps, 0.02, 1.5); }   // Startverzögerung lernen
+  VE.win = VE.win.concat(off).slice(-5);
+  const mean = VE.win.reduce((x, y) => x + y, 0) / VE.win.length;
+  if (Math.abs(off) > 12 && performance.now() - VE.lastSeek > 700) { veStart(aT); return; }      // grob daneben → einmal springen
+  const rate = Math.abs(mean) < 0.35 ? 1 : 1 - clamp(mean * (VE.synced ? 0.05 : 0.08), -0.3, 0.3);
+  if (Math.abs(pv.playbackRate - rate) > 0.005) pv.playbackRate = rate;
+  VE.synced = VE.synced ? Math.abs(mean) <= 2 : (VE.win.length >= 3 && Math.abs(mean) <= 1);
+}
+video.requestVideoFrameCallback(onMain);
+pv.requestVideoFrameCallback(onPV);
 // Shot mit 1 s Vor- und Nachlauf spielen (im Slip-Modus mit dem Entwurf, sonst mit dem wirksamen Zielzustand)
 let ctxStop = null;
 function playContext(sh, srcIn) {
