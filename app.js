@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.7a';
+const APP_VERSION = 'v4.7b';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -210,22 +210,31 @@ async function bkAngeboteZeigen() {
   box.innerHTML = liste.map(angebotHtml).join('')
     // Home-Bildschirm-App ohne Link (z. B. vorher ohne Link hinzugefügt): Link aus der Nachricht einfügen
     + (!links.length && standalone() ? `<div class="proj neu"><div class="info"><div class="name">🔗 Feedback-Link von Blue Tacit</div>
-      <div class="meta">Link aus der Nachricht kopieren und hier einfügen</div></div><button class="primary" id="bkPaste">Link einfügen</button></div>` : '');
+      <div class="meta">Link in der Nachricht lange drücken → „Kopieren“, dann hier tippen</div></div><button class="primary" id="bkPaste">Link einfügen</button></div>` : '');
   box.querySelectorAll('[data-laden]').forEach((b) => b.onclick = () => bkLaden(liste[+b.dataset.laden]));
   const pb = $('bkPaste'); if (pb) pb.onclick = bkLinkEinfuegen;
   if (liste.length) log('versionen-angeboten', { n: liste.length });
 }
-function bkLinkEinfuegen() {
+// iOS öffnet Links nie in der Home-Bildschirm-App (Robert 08.11.) → kopierten Link mit einem Tipp übernehmen:
+// erst direkt aus der Zwischenablage (iOS fragt „Einfügen erlauben“), sonst Eingabefeld
+const bkKeyAus = (t) => { const m = String(t || '').match(/[?&]bk=([A-Za-z0-9_-]{20,64})/) || String(t || '').trim().match(/^([A-Za-z0-9_-]{20,64})$/); return m ? m[1] : null; };
+async function bkLinkEinfuegen() {
+  try {
+    const key = navigator.clipboard && navigator.clipboard.readText ? bkKeyAus(await navigator.clipboard.readText()) : null;
+    if (key) { log('bk-link-eingefuegt', { weg: 'zwischenablage' }); return bkSetup(key, null); }
+  } catch { /* nicht erlaubt → Feld */ }
+  bkLinkFeld();
+}
+function bkLinkFeld() {
   modal(`<h2>Feedback-Link einfügen</h2><p class="hint">In der Nachricht von Blue Tacit den Link lange drücken → „Kopieren“, dann hier ins Feld tippen → „Einfügen“.</p>
     <input id="bkIn" type="url" placeholder="https://socialmedia-btp.github.io/bt-sichtung/?bk=…" style="width:100%;min-height:44px">
     <div class="row"><button id="bkNo">Abbrechen</button><button id="bkOk" class="primary">Übernehmen</button></div>`, (b) => {
     b.querySelector('#bkNo').onclick = closeModal;
     b.querySelector('#bkOk').onclick = async () => {
-      const t = b.querySelector('#bkIn').value.trim();
-      const m = t.match(/[?&]bk=([A-Za-z0-9_-]{20,64})/) || t.match(/^([A-Za-z0-9_-]{20,64})$/);
-      if (!m) { toast('Das ist kein Feedback-Link – bitte den ganzen Link einfügen', 4000); return; }
-      log('bk-link-eingefuegt');
-      closeModal(); await bkSetup(m[1], null);
+      const key = bkKeyAus(b.querySelector('#bkIn').value);
+      if (!key) { toast('Das ist kein Feedback-Link – bitte den ganzen Link einfügen', 4000); return; }
+      log('bk-link-eingefuegt', { weg: 'feld' });
+      closeModal(); await bkSetup(key, null);
     };
   });
 }
@@ -2028,6 +2037,7 @@ $('btnSave').onclick = saveFile;
 $('openInput').onchange = (e) => { if (e.target.files[0]) openSaveFile(e.target.files[0]); e.target.value = ''; };
 $('homeOpenInput').onchange = (e) => { if (e.target.files[0]) openSaveFileFromHome(e.target.files[0]); e.target.value = ''; };
 $('btnHelp').onclick = help; $('btnHelp2').onclick = help;
+$('btnPaste').onclick = () => bkLinkEinfuegen();   // Link für die Home-Bildschirm-App (iOS öffnet Links nur im Browser)
 // Jede Dateiauswahl protokollieren (öffnen / Auswahl angekommen) und Fehler sichtbar machen statt still abzubrechen
 const auswahlLog = (wo, fs) => log('datei-auswahl', { wo, n: fs.length, dateien: fs.slice(0, 6).map((f) => `${f.name} (${(f.size / 1e6).toFixed(1)} MB)`) });
 const sichtbar = (wo) => (e) => { log('import-fehler', { wo, msg: String(e && e.message || e) }); closeModal(); toast(`Import abgebrochen: ${e && e.message || e}`, 6000); };
