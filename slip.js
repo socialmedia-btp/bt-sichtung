@@ -212,7 +212,7 @@ function mainStep(m) {
   if (!VE.cur || VE.laedt) return;
   const vIn = VE.cur.sh.v_in / fps, vOut = VE.cur.sh.v_out / fps;
   // Start 2,1 s vor dem Shot – aber nicht vor dem Clipanfang (neuer Inhalt nahe am Clipanfang → später starten)
-  const startAb = Math.max(vIn - 2.1, vIn - VE.cur.srcIn / sh.src_fps - VE.vorhalt + 0.02);
+  const startAb = Math.max(vIn - 2.1, vIn - VE.cur.srcIn / VE.cur.sh.src_fps - VE.vorhalt + 0.02);
   if (!VE.gestartet && t >= startAb) veStart(t);
   const inShot = t >= vIn - 0.5 / fps && t < vOut - 0.5 / fps;
   veShow(inShot && VE.off !== null && Math.abs(VE.off) <= 1.5);
