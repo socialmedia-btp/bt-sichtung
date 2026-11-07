@@ -220,6 +220,7 @@ const until = async (t) => { while (autoRun && A.currentTime < t) await wait(40)
 $('auto').onclick = async () => {
   if (autoRun) { autoRun = false; return; }
   autoRun = true; $('auto').textContent = 'Test abbrechen'; ev('auto-start');
+  A.muted = true; // stumm: darf dann auch ohne Fingertipp starten (Fernsteuerung per Kabel), Messung braucht keinen Ton
   for (const [i, s] of tests.entries()) {
     if (!autoRun) break;
     if (i === 4) { seek((vIn(s) + vOut(s)) / 2); ev('test: Start mitten im Shot'); }   // Sprung in einen Shot hinein
