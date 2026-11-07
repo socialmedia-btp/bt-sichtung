@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.4b';
+const APP_VERSION = 'v4.4c';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -17,7 +17,8 @@ const $ = (id) => document.getElementById(id);
 /* ---------- IndexedDB ---------- */
 const DB = {
   db: null,
-  offen: new Set(),   // laufende Transaktionen – werden beim Verlassen der Seite abgebrochen (siehe pagehide)
+  offen: new Set(),
+  gross: 0,           // >0 während Videos importiert werden (dann keine Sperr-Warnung)   // laufende Transaktionen – werden beim Verlassen der Seite abgebrochen (siehe pagehide)
   open() {
     return new Promise((res, rej) => {
       const r = indexedDB.open('bt-sichtung', 1);
@@ -43,7 +44,7 @@ const DB = {
     });
     // iPad (Chrome): ein Hintergrund-Tab kann den Speicher sperren → nicht endlos warten, sondern klar melden
     // (große Dateien beim Import brauchen länger; nur kleine Lese-/Schreibvorgänge im Zustand werden überwacht)
-    if (store !== 'state') return p;
+    if (store !== 'state' || DB.gross) return p; // während großer Importe warten Zustands-Zugriffe legitim länger
     return Promise.race([p, new Promise((_, rej) => setTimeout(() => { DB.haengt(); rej(new Error('Speicher antwortet nicht')); }, 15000))]);
   },
   haengt() {
@@ -182,6 +183,8 @@ async function importFiles(fileList, dirHandle) {
   const have = new Set(await DB.keys('files'));
   modal(`<h2>Importiere ${esc(meta.name)}</h2><div class="progress"><div id="impBar"></div></div><p id="impTxt" class="hint"></p>`);
   let done = 0, bytes = 0;
+  DB.gross++;
+  try {
   for (const name of needed) {
     const f = byName.get(name);
     const key = id + '/' + name;
@@ -196,6 +199,7 @@ async function importFiles(fileList, dirHandle) {
     $('impBar').style.width = (100 * done / needed.length) + '%';
     $('impTxt').textContent = `${done} / ${needed.length} · ${name}`;
   }
+  } finally { DB.gross--; }
   const missing = needed.filter((n) => !have.has(id + '/' + n)).length;
   const old = await DB.get('projects', id);
   const project_id = (old && old.project_id) || (old ? await projectIdOf(old.meta) : pid); // einmal vergeben, bleibt fest
@@ -2007,7 +2011,8 @@ async function importVersionPairInner(files) {
   const frames = Math.round(dur * m.fps);
   if (!dur || Math.abs(frames - m.dauer_frames) > 2) return importError(`Länge passt nicht (Video ${frames} Bilder, JSON ${m.dauer_frames}).`);
   const key = `${S.proj.id}/versionen/${m.export.export_id}.mp4`;
-  await DB.put('files', blob, key);
+  DB.gross++;
+  try { await DB.put('files', blob, key); } finally { DB.gross--; }
   $('impBar').style.width = '100%';
   let ver = S.ps.versions.find((v) => v.version_id === m.version_id);
   const info = { export_id: m.export.export_id, datei: vf.name, file: key, dur: m.dauer_frames / m.fps, imported: Date.now(), manifest: m };
