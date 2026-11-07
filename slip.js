@@ -9,6 +9,24 @@ const SLIP_PRE = 1.2;                 // s: Proxy vor dem Shot unsichtbar anlauf
 const SLIP_LEAD = 0.8 / 25;           // s: Ausgleich des gemessenen Nachlaufs (Proxy-Bild erscheint ~0,8 Bild zu spät)
 const pv = $('pv'), pvLast = $('pvLast');
 
+/* ---------- Proxy im Arbeitsspeicher ----------
+ * Version und Proxy gleichzeitig aus IndexedDB zu lesen lässt den Proxy am iPad alle ~1 s stocken (gemessen 07.11.).
+ * Proxy-Clips sind klein (2–5 MB) → vor dem Abspielen komplett in den Arbeitsspeicher holen (die letzten 6 bleiben). */
+const MEM = new Map(); // Clip-ID → Blob-URL im Arbeitsspeicher
+async function memUrl(c) {
+  if (MEM.has(c.id)) { const u = MEM.get(c.id); MEM.delete(c.id); MEM.set(c.id, u); return u; }
+  const b = await DB.get('files', S.proj.id + '/' + c.file);
+  if (!b) return S.urls.get(c.id);
+  const u = URL.createObjectURL(new Blob([await b.arrayBuffer()], { type: 'video/mp4' }));
+  MEM.set(c.id, u);
+  while (MEM.size > 6) { const [k, old] = MEM.entries().next().value; URL.revokeObjectURL(old); MEM.delete(k); }
+  return u;
+}
+async function pvLoad(el, c) {
+  if (el.dataset.cid === c.id && el.dataset.mem === '1') return;
+  el.dataset.cid = c.id; el.dataset.mem = '1'; el.src = await memUrl(c);
+}
+
 /* ---------- Zielzustand je Shot ---------- */
 function shotEvents(id) { return (S.state.ereignisse || []).filter((e) => e.shot === id); }
 function effZiel(sh) { return BTV.zielOf(sh, shotEvents(sh.id)); }          // null = unverändert
@@ -31,7 +49,7 @@ const deltaTxt = (sh, srcIn) => { const d = (srcIn - sh.src_in) / sh.src_fps; re
 
 /* ---------- Slip-Modus ---------- */
 let SL = null; // {sh, c, srcIn, step, n, max, pps, drag}
-function startSlip() {
+async function startSlip() {
   const sg = shotNow(); if (!sg) return;
   const sh = sg.shot, grund = slipGrund(sh);
   if (grund) { toast('Verschieben nicht möglich: ' + grund, 3500); return; }
@@ -43,8 +61,8 @@ function startSlip() {
   SL = { sh, c, srcIn: effSrcIn(sh), start: effSrcIn(sh), step, n, max: clipFrames - n, fps };
   document.body.classList.add('slip');
   $('slipBar').classList.remove('hidden');
-  pv.src = S.urls.get(c.id); pvLast.src = S.urls.get(c.id);
-  pv.dataset.cid = c.id; pv.style.opacity = ''; pv.classList.remove('hidden'); pvLast.classList.remove('hidden'); $('pvBadge').classList.remove('hidden');
+  await pvLoad(pv, c); await pvLoad(pvLast, c);
+  pv.style.opacity = ''; pv.classList.remove('hidden'); pvLast.classList.remove('hidden'); $('pvBadge').classList.remove('hidden');
   log('slip-start', { shot: sh.id, src_in: SL.srcIn });
   slipResize(); slipUpdate(true);
 }
@@ -184,13 +202,13 @@ function onMain(now, m) {
     VE.cur = target; VE.started = false; VE.synced = false; veShow(false);
     if (target) {
       const c = footClipOf(target.sh);
-      if (pv.dataset.cid !== c.id) { pv.src = S.urls.get(c.id); pv.dataset.cid = c.id; }
       pv.muted = true; pv.classList.remove('hidden');
+      if (pv.dataset.cid !== c.id || pv.dataset.mem !== '1') { VE.laedt = true; pvLoad(pv, c).then(() => { VE.laedt = false; }); }
     }
   }
   if (!VE.cur) return;
   if (video.paused) { if (!pv.paused) pv.pause(); VE.started = false; VE.synced = false; }
-  else if (!VE.started && t >= VE.cur.sh.v_in / fps - SLIP_PRE) veStart(t);
+  else if (!VE.started && !VE.laedt && t >= VE.cur.sh.v_in / fps - SLIP_PRE) veStart(t);
   const inShot = t >= VE.cur.sh.v_in / fps - 0.5 / fps && t < VE.cur.sh.v_out / fps - 0.5 / fps;
   veShow(inShot && VE.synced);                                   // nicht synchron → Versionsbild bleibt sichtbar
 }
@@ -224,7 +242,7 @@ async function playContext(sh, srcIn) {
   if (SL) SL.ctx = { sh, srcIn };
   pvLast.classList.add('hidden');
   // Proxy vorladen, damit er beim Start schon bereit ist
-  if (pv.dataset.cid !== fc.id) { pv.src = S.urls.get(fc.id); pv.dataset.cid = fc.id; }
+  await pvLoad(pv, fc);
   if (pv.readyState < 1) await new Promise((r) => { pv.addEventListener('loadedmetadata', r, { once: true }); setTimeout(r, 3000); });
   S.T = c.s + Math.max(0, sh.v_in / fps - 2); showFrame(true);   // 2 s Vorlauf: Proxy hat Zeit zum Einschwingen (wie Sync-Test)
   setTimeout(() => play(), 120);
