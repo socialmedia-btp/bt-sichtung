@@ -7,7 +7,7 @@
 'use strict';
 const SLIP_PRE = 1.2;                 // s: Proxy vor dem Shot unsichtbar anlaufen lassen
 const SLIP_LEAD = 0;                  // s: feste Korrektur – nicht nötig, die Vorschau misst mit echten Anzeigezeiten und lernt den Vorhalt
-const pv = $('pv'), pvLast = $('pvLast');
+const pv = $('pv'), pvLast = $('pvLast'), pvStill = $('pvStill');
 
 /* ---------- Proxy im Arbeitsspeicher ----------
  * Version und Proxy gleichzeitig aus IndexedDB zu lesen lässt den Proxy am iPad alle ~1 s stocken (gemessen 07.11.).
@@ -30,7 +30,7 @@ async function pvLoad(el, c) {
 }
 // Projektwechsel: Vorschau-Videos und Speicher-Cache freigeben (von openProject aufgerufen)
 function pvReset() {
-  for (const el of [pv, pvLast]) { el.pause(); el.removeAttribute('src'); el.load(); delete el.dataset.key; delete el.dataset.cid; }
+  for (const el of [pv, pvLast, pvStill]) { el.pause(); el.removeAttribute('src'); el.load(); delete el.dataset.key; delete el.dataset.cid; }
   for (const u of MEM.values()) URL.revokeObjectURL(u);
   MEM.clear();
 }
@@ -203,11 +203,15 @@ document.addEventListener('keydown', (e) => {
  * nach dem Stocken den Versatz im ruhigen Lauf messen, bei Bedarf EINMAL noch vor dem Shot neu ansetzen. Im Shot keine
  * Eingriffe – sichtbar nur, wenn ≤ 1,5 Bild Versatz; sonst bleibt das Versionsbild. Die Vorhaltezeit gilt für alle Shots. */
 const VE = { cur: null, gestartet: 0, ruhigAb: 0, win: [], off: null, versuche: 0, vorhalt: 0.4, aMeta: null };
-function pvHide() { pv.classList.add('hidden'); pv.style.opacity = 0; if (!pv.paused) pv.pause(); VE.cur = null; VE.gestartet = 0; $('pvBadge').classList.toggle('hidden', !SL); }
+function pvHide() { pv.classList.add('hidden'); pv.style.opacity = 0; if (!pv.paused) pv.pause(); pvStill.classList.add('hidden'); pvStill.style.opacity = 0; VE.cur = null; VE.gestartet = 0; $('pvBadge').classList.toggle('hidden', !SL); }
 function changedShots() { return (S.vsegs || []).map((x) => x.shot).filter((sh, i, a) => a.indexOf(sh) === i && effZiel(sh) && footClipOf(sh)); }
 const veFps = () => S.ver.manifest.fps;
 const veSrcAt = (z, t) => z.srcIn / z.sh.src_fps + (t - z.sh.v_in / veFps()) + SLIP_LEAD;   // gewünschte Proxy-Zeit
-function veShow(on) { pv.style.opacity = on ? 1 : 0; $('pvBadge').classList.toggle('hidden', !on && !SL); }
+function veShow(on, still) {
+  pv.style.opacity = on ? 1 : 0;
+  pvStill.style.opacity = !on && still && VE.stillBereit ? 1 : 0;
+  $('pvBadge').classList.toggle('hidden', !on && !(still && VE.stillBereit) && !SL);
+}
 function veStart(t) {
   pv.playbackRate = 1;
   pv.currentTime = Math.max(0, veSrcAt(VE.cur, t + VE.vorhalt));   // um die Stockzeit vorausspringen
@@ -221,7 +225,14 @@ async function veVorbereiten(target) {
   if (!pv.paused) pv.pause();
   pv.muted = true; pv.classList.remove('hidden');
   VE.laedt = true; await pvLoad(pv, footClipOf(target.sh)); VE.laedt = false;
-  if (sitzung !== SITZUNG) { VE.cur = null; pv.pause(); }
+  if (sitzung !== SITZUNG) { VE.cur = null; pv.pause(); return; }
+  // Standbild = erstes Bild des neuen Inhalts (wird gezeigt, solange der Proxy noch nicht synchron läuft)
+  VE.stillBereit = false;
+  await pvLoad(pvStill, footClipOf(target.sh));
+  if (sitzung !== SITZUNG || VE.cur !== target) return;
+  pvStill.classList.remove('hidden');
+  pvStill.currentTime = (target.srcIn + 0.5) / target.sh.src_fps;
+  pvStill.addEventListener('seeked', () => { if (VE.cur === target) VE.stillBereit = true; }, { once: true });
 }
 function onMain(now, m) {
   if (veIds) veIds[0] = video.requestVideoFrameCallback(onMain);
@@ -247,7 +258,7 @@ function mainStep(m) {
   if (!VE.gestartet && t >= startAb) veStart(t);
   const inShot = t >= vIn - 0.5 / fps && t < vOut - 0.5 / fps;
   const frisch = performance.now() - (VE.bildAt || 0) < 150 && !pv.seeking && !pv.paused && pv.readyState >= 2;   // F08
-  veShow(inShot && frisch && VE.off !== null && Math.abs(VE.off) <= 1.5);
+  veShow(inShot && frisch && VE.off !== null && Math.abs(VE.off) <= 1.5, inShot);
 }
 function onPV(now, m) {
   if (veIds) veIds[1] = pv.requestVideoFrameCallback(onPV);
