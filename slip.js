@@ -198,7 +198,8 @@ function onMain(now, m) {
   if (!S.ver || !S.playing || (SL && !SL.ctx)) { if (VE.cur) { pv.pause(); VE.cur = null; VE.gestartet = 0; if (!SL) pvHide(); } return; }
   VE.aMeta = { t: m.mediaTime, d: m.expectedDisplayTime };
   const t = m.mediaTime, fps = veFps();
-  const list = SL && SL.ctx ? [SL.ctx] : changedShots().map((sh) => ({ sh, srcIn: effSrcIn(sh) }));
+  const ctxZ = (SL && SL.ctx) || VE.nur;                          // „Im Zusammenhang“: nur dieser Shot
+  const list = ctxZ ? [ctxZ] : changedShots().map((sh) => ({ sh, srcIn: effSrcIn(sh) }));
   const target = list.find((z) => t >= z.sh.v_in / fps - 2.6 && t < z.sh.v_out / fps) || null;
   if ((target && target.sh) !== (VE.cur && VE.cur.sh)) {
     if (VE.cur) pv.pause();
@@ -222,7 +223,8 @@ function onPV(now, m) {
   const mean = VE.win.reduce((x, y) => x + y, 0) / VE.win.length;
   VE.off = VE.win.length >= 2 ? mean : null;
   if (VE.win.length === 4 && Math.abs(mean) > 1.2) {
-    VE.vorhalt = clamp(VE.vorhalt - mean / fps, 0, 1.2);          // lernen: hinkt → mehr Vorhalt
+    // lernen: hinkt → mehr Vorhalt; nur plausible Messungen, höchstens 0,15 s je Schritt
+    if (Math.abs(mean) < 15) VE.vorhalt = clamp(VE.vorhalt - clamp(mean / fps, -0.15, 0.15), 0.1, 0.9);
     const bisShot = VE.cur.sh.v_in / fps - aT;
     if (bisShot > 0.95 && VE.versuche++ < 2) veStart(aT);         // nur vor dem Shot neu ansetzen (Stocken fällt in den Vorlauf)
     else VE.win = [];
@@ -241,7 +243,7 @@ video.addEventListener('pause', () => { if (VE.cur) { pv.pause(); VE.gestartet =
 let ctxStop = null;
 async function playContext(sh, srcIn) {
   const fps = S.ver.manifest.fps, c = S.clips[0], fc = footClipOf(sh);
-  if (SL) SL.ctx = { sh, srcIn };
+  if (SL) SL.ctx = { sh, srcIn }; else VE.nur = { sh, srcIn };
   pvLast.classList.add('hidden');
   // Proxy vorladen, damit er beim Start schon bereit ist
   await pvLoad(pv, fc);
@@ -254,7 +256,7 @@ async function playContext(sh, srcIn) {
     if (S.playing) lief = true;
     if (!lief) return;                                   // Start abwarten
     if (!S.playing || video.currentTime >= sh.v_out / fps + 1) {
-      clearInterval(ctxStop); stopPlay();
+      clearInterval(ctxStop); stopPlay(); VE.nur = null;
       if (SL) { SL.ctx = null; pvLast.classList.remove('hidden'); pv.classList.remove('hidden'); pv.style.opacity = 1; slipSeekT = 0; slipUpdate(true); }
     }
   }, 50);
