@@ -77,12 +77,12 @@ function idb(store, mode, fn) { return new Promise((res, rej) => { const t = db.
     $('info').textContent = 'In diesem Browser liegt kein Projekt → Proxies aus dem OneDrive-Projektordner wählen (alle Dateien) oder Seite aus der App öffnen.'; }
 })();
 // Quelle der Proxies: App-Speicher (Projekt) oder direkt gewählte Dateien
-let proxSrc = null;   // {meta, blob(name)}
-$('proj').onchange = async () => { const p = await idb('projects', 'readonly', (o) => o.get($('proj').value));
+let proxSrc = null, ausOrdner = false;   // {meta, blob(name)}; gewählter Ordner hat Vorrang vor dem App-Projekt
+$('proj').onchange = async () => { if (ausOrdner) { setup(); return; } const p = await idb('projects', 'readonly', (o) => o.get($('proj').value));
   proxSrc = p && { meta: p.meta, blob: (n) => idb('files', 'readonly', (o) => o.get(p.id + '/' + n)) }; setup(); };
 $('proxFiles').onchange = async (e) => { const fl = [...e.target.files]; e.target.value = '';
   const pj = fl.find((f) => /projekt.*\.json$/i.test(f.name)); if (!pj) { $('info').textContent = 'projekt.json fehlt in der Auswahl (alle Dateien des Projektordners wählen).'; return; }
-  const by = new Map(fl.map((f) => [f.name, f])); proxSrc = { meta: JSON.parse(await pj.text()), blob: async (n) => by.get(n) || null };
+  const by = new Map(fl.map((f) => [f.name, f])); proxSrc = { meta: JSON.parse(await pj.text()), blob: async (n) => by.get(n) || null }; ausOrdner = true;
   $('proxBtn').firstChild.textContent = `Proxies: ${fl.length - 1} Dateien `; setup(); };
 
 $('files').onchange = (e) => { const fl = [...e.target.files]; e.target.value = ''; loadVersion(fl); };
