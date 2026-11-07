@@ -1,0 +1,107 @@
+{
+ "format": "bt-sichtung",
+ "version": 1,
+ "name": "Framepoint Testprojekt",
+ "created": "2026-01-10T12:00:00",
+ "project_id": "p-framepointtest",
+ "tracks": [
+  {
+   "id": "CAM_A",
+   "label": "Kamera A (50p)"
+  },
+  {
+   "id": "CAM_B",
+   "label": "Kamera B (25p)"
+  },
+  {
+   "id": "DROHNE",
+   "label": "Drohne"
+  }
+ ],
+ "clips": [
+  {
+   "id": "CAM_A_A001",
+   "track": "CAM_A",
+   "name": "A001.MP4",
+   "file": "CAM_A_A001.mp4",
+   "sprite": "CAM_A_A001.jpg",
+   "spriteN": 10,
+   "spriteStep": 2.0,
+   "start": "2026-01-10T18:00:00.000",
+   "dur": 20,
+   "fps": 50,
+   "original": "TEST:\\CAM_A\\A001.MP4",
+   "warn": []
+  },
+  {
+   "id": "CAM_B_B001",
+   "track": "CAM_B",
+   "name": "B001.MP4",
+   "file": "CAM_B_B001.mp4",
+   "sprite": "CAM_B_B001.jpg",
+   "spriteN": 13,
+   "spriteStep": 1.9231,
+   "start": "2026-01-10T18:00:05.000",
+   "dur": 25,
+   "fps": 25,
+   "original": "TEST:\\CAM_B\\B001.MP4",
+   "warn": []
+  },
+  {
+   "id": "DROHNE_D001",
+   "track": "DROHNE",
+   "name": "D001.MP4",
+   "file": "DROHNE_D001.mp4",
+   "sprite": "DROHNE_D001.jpg",
+   "spriteN": 5,
+   "spriteStep": 2.0,
+   "start": "2026-01-10T18:00:10.000",
+   "dur": 10,
+   "fps": 25,
+   "original": "TEST:\\DROHNE\\D001.MP4",
+   "warn": []
+  },
+  {
+   "id": "CAM_A_A002",
+   "track": "CAM_A",
+   "name": "A002.MP4",
+   "file": "CAM_A_A002.mp4",
+   "sprite": "CAM_A_A002.jpg",
+   "spriteN": 8,
+   "spriteStep": 1.875,
+   "start": "2026-01-10T18:00:30.000",
+   "dur": 15,
+   "fps": 50,
+   "original": "TEST:\\CAM_A\\A002.MP4",
+   "warn": []
+  },
+  {
+   "id": "CAM_B_B002",
+   "track": "CAM_B",
+   "name": "B002.MP4",
+   "file": "CAM_B_B002.mp4",
+   "sprite": "CAM_B_B002.jpg",
+   "spriteN": 9,
+   "spriteStep": 2.0,
+   "start": "2026-01-10T18:04:58.000",
+   "dur": 18,
+   "fps": 25,
+   "original": "TEST:\\CAM_B\\B002.MP4",
+   "warn": []
+  },
+  {
+   "id": "CAM_A_A003",
+   "track": "CAM_A",
+   "name": "A003.MP4",
+   "file": "CAM_A_A003.mp4",
+   "sprite": "CAM_A_A003.jpg",
+   "spriteN": 6,
+   "spriteStep": 2.0,
+   "start": "2026-01-10T18:05:00.000",
+   "dur": 12,
+   "fps": 50,
+   "original": "TEST:\\CAM_A\\A003.MP4",
+   "warn": []
+  }
+ ]
+}

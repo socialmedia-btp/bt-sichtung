@@ -206,3 +206,20 @@ body.fs .reel-bar { top: max(12px, var(--safe-t)); }
 .reel-bar [data-star] { background: transparent; font-size: 30px; min-width: 48px; min-height: 48px; color: #5a5a60; }
 .reel-bar [data-star].on { color: var(--sel); }
 .reel-bar .reel-end { background: rgba(255,255,255,0.1); min-width: 44px; border-radius: 22px; }
+
+/* v4: Umschalter Shortlist | Edit (iOS-Segment), Versionsliste, Hinweisliste beim Speichern */
+.seg { display: inline-flex; background: var(--panel2); border-radius: 10px; padding: 2px; margin-left: 6px; flex: none; }
+.seg button { background: transparent; min-height: 36px; padding: 6px 14px; border-radius: 8px; color: var(--muted); font-weight: 600; white-space: nowrap; }
+.seg button.on { background: #3a3a3e; color: var(--text); box-shadow: 0 1px 3px #0006; }
+.ver-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.ver { display: flex; align-items: center; gap: 10px; background: var(--panel2); border-radius: 14px; padding: 12px 14px; }
+.ver.cur { box-shadow: inset 3px 0 0 #4c9aff; }
+.ver.wait { opacity: .7; border: 1px dashed #3a3a3e; background: transparent; }
+.ver .info { flex: 1; min-width: 0; }
+.ver .name { font-weight: 600; }
+.ver .meta { color: var(--muted); font-size: 13px; }
+.problems { background: #ff9f0a1f; border: 1px solid #ff9f0a55; border-radius: 12px; padding: 10px 12px; font-size: 14px; margin: 8px 0; }
+.hud .ok { color: #7cc4ff; }
+.hud .lock { color: #b8bcc2; }
+.stars button.rot { font-size: 15px; font-weight: 700; color: #6b6f76; margin-left: 10px; border: 1px solid #3a3a3e; border-radius: 10px; padding: 0 12px; }
+.stars button.rot.on { color: #fff; background: var(--red); border-color: var(--red); }

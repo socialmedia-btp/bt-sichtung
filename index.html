@@ -60,6 +60,10 @@
   <header class="bar">
     <button id="btnBack" class="ghost">‹ Projekte</button>
     <h1 id="projTitle"></h1>
+    <div id="tabs" class="seg hidden" role="tablist">
+      <button data-tab="shortlist" role="tab">Shortlist</button>
+      <button data-tab="edit" role="tab" title="Version wählen oder importieren">Edit <span id="verName"></span> ▾</button>
+    </div>
     <span class="grow"></span>
     <button data-act="fs" class="ghost" title="Vollbild (F)">⛶</button>
     <button id="btnHelp" class="ghost">Hilfe</button>
@@ -102,7 +106,7 @@
     <aside class="side">
       <div id="current" class="current"></div>
       <div class="list-head">
-        <span>Shortlist</span><span id="selCount" class="muted"></span>
+        <span id="listTitle">Shortlist</span><span id="selCount" class="muted"></span>
         <button data-act="reel" class="mini" title="Nur die In/Out-Stellen abspielen (R)">▶ abspielen</button>
       </div>
       <div id="selList" class="sel-list"></div>

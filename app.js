@@ -9,7 +9,8 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v3.5';
+const APP_VERSION = 'v4.0a';
+const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
 
@@ -53,7 +54,7 @@ const pad = (n, w = 2) => String(Math.floor(n)).padStart(w, '0');
 function clock(sec, fps) {
   sec = ((sec % 86400) + 86400) % 86400;
   let s = `${pad(sec / 3600)}:${pad((sec % 3600) / 60)}:${pad(sec % 60)}`;
-  if (fps) s += ':' + pad((sec % 1) * fps + 1e-6);
+  if (fps) s += ':' + pad((sec % 1) * fps + 1e-4);
   return s;
 }
 function tcClip(sec, fps) {
@@ -73,6 +74,14 @@ function modal(html, onReady) {
   if (onReady) onReady($('modalBox'));
 }
 function closeModal() { $('modal').classList.add('hidden'); $('modalBox').innerHTML = ''; }
+async function sha1hex(data) {
+  return [...new Uint8Array(await crypto.subtle.digest('SHA-1', data))].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+// Feste Projekt-ID wie bt_v4.project_id_of: aus projekt.json, sonst aus Name + Anlagezeit
+async function projectIdOf(meta) {
+  if (meta.project_id) return meta.project_id;
+  return 'p-' + (await sha1hex(new TextEncoder().encode(`${meta.name || ''}|${meta.created || ''}`))).slice(0, 12);
+}
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 /* ---------- Zustand ---------- */
@@ -81,7 +90,9 @@ const S = {
   clips: [],           // {id, track, name, file, s0, s (inkl. Versatz), dur, fps, ...}
   byId: new Map(),
   tracks: [],
-  state: null,         // {selections, offsets, activeTrack, T, pps}
+  ps: null,            // Projektzustand v4: {v:4, tab, activeVersion, revision, shortlist: Kontext, versions: [{…, ctx: Kontext}], wartend}
+  state: null,         // aktiver Kontext {selections, offsets, takes, ereignisse?, activeTrack, T, pps} (zeigt in S.ps)
+  ver: null,           // aktive Version im Edit-Tab (null = Shortlist)
   urls: new Map(),     // Clip-ID → Blob-URL
   sprites: new Map(),  // Clip-ID → Image
   axis: null,
@@ -105,11 +116,12 @@ async function showHome() {
   list.innerHTML = projs.length ? '' : '<p class="hint">Noch kein Projekt. Importiere einen Projektordner.</p>';
   for (const p of projs.sort((a, b) => (b.opened || 0) - (a.opened || 0))) {
     const st = await DB.get('state', p.id);
-    const n = st ? st.selections.length : 0;
+    const n = st ? (st.shortlist || st).selections.length : 0;
+    const nv = st && st.versions ? st.versions.length : 0;
     const el = document.createElement('div');
     el.className = 'proj';
     el.innerHTML = `<div class="info"><div class="name">${esc(p.meta.name)}</div>
-      <div class="meta">${p.meta.clips.length} Clips · ${fmtGB(p.bytes || 0)} · ${n} Auswahl${p.missing ? ` · <span style="color:var(--red)">${p.missing} Dateien fehlen</span>` : ''}</div></div>
+      <div class="meta">${p.meta.clips.length} Clips · ${fmtGB(p.bytes || 0)} · ${n} Auswahl${nv ? ` · ${nv} Version${nv > 1 ? 'en' : ''}` : ''}${p.missing ? ` · <span style="color:var(--red)">${p.missing} Dateien fehlen</span>` : ''}</div></div>
       <button class="primary">Öffnen</button><button class="ghost danger" title="Projekt vom Gerät löschen">✕</button>`;
     el.querySelector('.primary').onclick = () => openProject(p.id);
     el.querySelector('.danger').onclick = () => deleteProject(p);
@@ -172,7 +184,7 @@ async function deleteProject(p) {
       const keys = (await DB.keys('files')).filter((k) => k.startsWith(p.id + '/'));
       for (const k of keys) await DB.del('files', k);
       const st = await DB.get('state', p.id);
-      if (st) for (const s of st.selections) for (const n of s.notes || []) await DB.del('notes', n.id);
+      if (st) for (const ctx of contexts(st)) for (const s of ctx.selections) for (const n of s.notes || []) await DB.del('notes', n.id);
       await DB.del('state', p.id); await DB.del('projects', p.id);
       closeModal(); showHome();
     };
@@ -186,19 +198,15 @@ async function openProject(id) {
   S.proj = p;
   for (const u of S.urls.values()) URL.revokeObjectURL(u);
   S.urls.clear(); S.sprites.clear();
-  S.tracks = p.meta.tracks.map((t, i) => ({ ...t, color: TRACK_COLORS[i % TRACK_COLORS.length] }));
-  S.state = (await DB.get('state', id)) || { selections: [], offsets: {}, activeTrack: null, T: null, pps: 20 };
-  S.state.takes = S.state.takes || [];
-  S.clips = p.meta.clips.map((c) => ({ ...c, s0: isoToSec(c.start) }));
-  S.byId = new Map(S.clips.map((c) => [c.id, c]));
-  applyOffsets();
-  S.activeTrack = S.state.activeTrack || S.tracks[0].id;
-  S.pps = S.state.pps || 20;
-  S.T = S.state.T ?? S.clips[0].s;
-  S.curSel = null;
+  S.footTracks = p.meta.tracks.map((t, i) => ({ ...t, color: TRACK_COLORS[i % TRACK_COLORS.length] }));
+  S.footClips = p.meta.clips.map((c) => ({ ...c, s0: isoToSec(c.start) }));
+  S.ps = await migrateState(await DB.get('state', id), id);
+  // Footage-Zeiten auch dann setzen, wenn das Projekt im Edit-Tab startet (Export braucht sie)
+  for (const c of S.footClips) c.s = c.s0 + (S.ps.shortlist.offsets[c.track] || 0);
+  S.hist = {}; S.state = null; S.ver = null;
 
   // Blob-URLs + Filmstreifen
-  for (const c of S.clips) {
+  for (const c of S.footClips) {
     const v = await DB.get('files', id + '/' + c.file);
     c.missing = !v;
     if (v) S.urls.set(c.id, URL.createObjectURL(v));
@@ -207,12 +215,91 @@ async function openProject(id) {
   }
   $('home').classList.add('hidden'); $('editor').classList.remove('hidden');
   $('projTitle').textContent = p.meta.name;
-  resetHistory(); markSaved(true); ensureStandFile();
-  log('projekt-offen', { name: p.meta.name, clips: S.clips.length, auswahl: S.state.selections.length });
-  resizeCanvas();
-  showFrame(true);
-  renderSide();
+  $('tabs').classList.toggle('hidden', p.meta.kind === 'version');
+  const vOk = S.ps.tab === 'edit' && S.ps.versions.some((v) => v.version_id === S.ps.activeVersion);
+  await enterContext(vOk ? 'edit' : 'shortlist', vOk ? S.ps.activeVersion : null);
+  markSaved(true); ensureStandFile();
+  log('projekt-offen', { name: p.meta.name, clips: S.footClips.length, auswahl: S.ps.shortlist.selections.length, versionen: S.ps.versions.length, tab: S.ps.tab });
 }
+
+/* ---------- Kontexte (v4) ----------
+ * Ein Projekt = ein Dreh. Kontext „Shortlist“ = Footage (Ortszeit, gekürzte Lücken); je importierter Version ein eigener
+ * Kontext mit fortlaufender Sequenzzeit (Kommentare, Cut-Takes, Änderungs-Ereignisse, Position, Zoom, Undo). */
+const newCtx = (extra) => ({ selections: [], offsets: {}, takes: [], activeTrack: null, T: null, pps: null, ...extra });
+const contexts = (ps) => (ps.v === 4 ? [ps.shortlist, ...ps.versions.map((v) => v.ctx)] : [ps]);
+async function migrateState(raw, pid) {
+  if (raw && raw.v === 4) return raw;
+  const ps = { v: 4, tab: 'shortlist', activeVersion: null, revision: 0, versions: [], wartend: {},
+    shortlist: newCtx(raw ? { ...raw, takes: raw.takes || [] } : { pps: 20 }) };
+  if (raw) {
+    // v3-Stand unverändert sichern, falls bei der Übernahme etwas schiefgeht
+    await DB.put('state', raw, '__v3__' + pid).catch(() => {});
+    log('migration-v3', { auswahl: raw.selections.length, takes: (raw.takes || []).length });
+  }
+  await DB.put('state', JSON.parse(JSON.stringify(ps)), pid);
+  return ps;
+}
+const ctxKey = () => (S.ver ? S.ver.version_id : 'shortlist');
+const isVersionView = () => !!S.ver || S.proj.meta.kind === 'version';
+function versionClip(ver) {
+  const m = ver.manifest;
+  return { id: 'v:' + ver.export_id, track: 'VERSION', name: m.sequenz, file: ver.file, sprite: null, s0: VBASE,
+    dur: ver.dur, fps: m.fps, original: ver.datei };
+}
+async function enterContext(tab, versionId) {
+  stopPlay(); endReel(); if (CUT.mode) toggleCutMode(false);
+  if (S.state) { S.state.activeTrack = S.activeTrack; S.state.T = S.T; S.state.pps = S.pps; S.hist[ctxKey()] = { U: [...UNDO], R: [...REDO], last: lastSnap }; }
+  const ver = tab === 'edit' ? S.ps.versions.find((v) => v.version_id === versionId) : null;
+  S.ps.tab = ver ? 'edit' : 'shortlist';
+  if (ver) {
+    S.ps.activeVersion = ver.version_id; S.ver = ver; S.state = ver.ctx;
+    S.tracks = [{ id: 'VERSION', label: 'Version', color: TRACK_COLORS[0] }];
+    const c = versionClip(ver);
+    if (!S.urls.has(c.id)) { const b = await DB.get('files', c.file); if (b) S.urls.set(c.id, URL.createObjectURL(b)); }
+    c.missing = !S.urls.has(c.id);
+    S.clips = [c];
+    S.vsegs = visibleShots(ver.manifest);
+  } else {
+    S.ver = null; S.state = S.ps.shortlist; S.tracks = S.footTracks; S.clips = S.footClips; S.vsegs = null;
+  }
+  S.byId = new Map(S.clips.map((c) => [c.id, c]));
+  applyOffsets();
+  S.activeTrack = S.tracks.some((t) => t.id === S.state.activeTrack) ? S.state.activeTrack : S.tracks[0].id;
+  S.pps = S.state.pps || (ver ? 8 : 20);
+  S.T = S.state.T ?? S.clips[0].s;
+  S.curSel = null; S.selTake = null;
+  const h = S.hist[ctxKey()];
+  if (h) { UNDO.length = 0; UNDO.push(...h.U); REDO.length = 0; REDO.push(...h.R); lastSnap = h.last; updateUndoBtns(); } else resetHistory();
+  renderTabs();
+  $('listTitle').textContent = isVersionView() ? 'Kommentare' : 'Shortlist';
+  log('kontext', { tab: S.ps.tab, version: ver ? ver.version_id : null });
+  resizeCanvas(); showFrame(true); renderSide(); save();
+}
+// Sichtbarer Shot je Zeitpunkt = oberste Ebene; benachbarte Stücke desselben Shots zusammengefasst (Sekunden ab Versionsbeginn)
+function visibleShots(m) {
+  const lvl = (s) => +String(s.ebene).replace(/\D/g, '') || 0;
+  // Bekannte Overlays (Kinobalken o. ä., stehen bei den Shots darunter als „overlay: <Name>“) verdecken nichts
+  const ov = new Set(m.shots.flatMap((s) => (s.folgen || []).filter((f) => f.startsWith('overlay: ')).map((f) => f.slice(9))));
+  const shots = m.shots.filter((s) => !ov.has(s.name));
+  const cuts = [...new Set(shots.flatMap((s) => [s.v_in, s.v_out]))].sort((a, b) => a - b);
+  const out = [];
+  for (let i = 0; i + 1 < cuts.length; i++) {
+    const a = cuts[i], b = cuts[i + 1];
+    const top = shots.filter((s) => s.v_in <= a && s.v_out >= b).sort((x, y) => lvl(y) - lvl(x))[0];
+    if (!top) continue;
+    const last = out[out.length - 1];
+    if (last && last.shot === top && last.b === a / m.fps) last.b = b / m.fps;
+    else out.push({ a: a / m.fps, b: b / m.fps, shot: top });
+  }
+  return out;
+}
+// +0,1 ms: Uhrzeiten um VBASE (~9,5·10⁸ s) haben Rundungsfehler, ein Sprung auf den Shot-Anfang landet sonst knapp davor
+const shotAt = (sec) => { sec += 1e-4; return (S.vsegs || []).find((x) => sec >= x.a && sec < x.b) || null; };
+function renderTabs() {
+  document.querySelectorAll('#tabs [data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === S.ps.tab));
+  $('verName').textContent = S.ver ? verLabel(S.ver) : (S.ps.versions.length ? '' : '＋');
+}
+const verLabel = (v) => (v.manifest.sequenz.match(/v\d+\w*$/i) || [v.manifest.sequenz])[0];
 
 function applyOffsets() {
   for (const c of S.clips) c.s = c.s0 + (S.state.offsets[c.track] || 0);
@@ -221,12 +308,12 @@ function applyOffsets() {
 
 let saveTimer = null;
 function save(now) {
-  if (!S.proj || !S.state) return;
+  if (!S.proj || !S.ps || !S.state) return;
   clearTimeout(saveTimer);
-  const pid = S.proj.id, st = S.state; // Projekt jetzt festhalten – ein Projektwechsel darf nicht umlenken
+  const pid = S.proj.id, ps = S.ps, st = S.state; // Projekt jetzt festhalten – ein Projektwechsel darf nicht umlenken
   const write = () => {
     if (S.state === st) { st.activeTrack = S.activeTrack; st.T = S.T; st.pps = S.pps; }
-    DB.put('state', JSON.parse(JSON.stringify(st)), pid)
+    DB.put('state', JSON.parse(JSON.stringify(ps)), pid)
       .catch((e) => { log('speichern-fehler', { msg: String(e && e.message || e) }); toast('Lokales Speichern fehlgeschlagen – bitte „Speichern“ (Datei) nutzen', 4000); });
   };
   if (now) write(); else saveTimer = setTimeout(write, 300);
@@ -278,12 +365,16 @@ const clipAt = (track, r) => S.clips.find((c) => c.track === track && r >= c.s &
 function shownClip(r = S.T) {
   return clipAt(S.activeTrack, r) || S.tracks.map((t) => clipAt(t.id, r)).find(Boolean) || null;
 }
+// Edit-Tab: Shot-Anfänge wie Clips behandeln (⏮ ⏭ springen von Shot zu Shot)
+const shotStarts = () => S.vsegs.map((x) => ({ s: S.clips[0].s + x.a }));
 function nextClipStart(r) {
+  if (S.ver && S.vsegs) return shotStarts().find((x) => x.s > r + 1e-3) || null;
   let best = null;
   for (const c of S.clips) if (c.s > r + 1e-3 && (!best || c.s < best.s)) best = c;
   return best;
 }
 function prevClipStart(r) {
+  if (S.ver && S.vsegs) return shotStarts().filter((x) => x.s < r - 0.25).pop() || null;
   let best = null;
   for (const c of S.clips) if (c.s < r - 0.25 && (!best || c.s > best.s)) best = c;
   return best;
@@ -372,7 +463,7 @@ function applySeek() {
   if (seekWanted == null || video.readyState < 1) return;
   const c = S.byId.get(video.dataset.cid);
   // in die Mitte des Bildes springen, damit der Browser sicher das richtige Bild zeigt
-  const f = Math.floor(seekWanted * c.fps + 1e-6);
+  const f = Math.floor(seekWanted * c.fps + 1e-4);
   video.currentTime = Math.min((f + 0.5) / c.fps, c.dur - 0.001);
   seekWanted = null;
 }
@@ -389,14 +480,18 @@ function updateNoteTarget() {
 function updateHud(c) {
   const fps = c ? c.fps : 25;
   const tr = c && S.tracks.find((t) => t.id === c.track);
-  $('hud').innerHTML = c ? `<span class="cam" style="color:${tr.color}">${esc(tr.label)}</span> · ${esc(c.name)}` : '';
+  const sg = c && S.ver ? shotAt(S.T - c.s) : null;
+  if (S.ver && (sg ? sg.shot.id : null) !== S.cardShot && (!S.curSel || !sels().includes(S.curSel))) renderCurrent();
+  $('hud').innerHTML = !c ? '' : sg
+    ? `<span class="cam">Shot ${sg.shot.nr}</span> · ${esc(shotName(sg.shot))} · <span class="${sg.shot.editierbar ? 'ok' : 'lock'}">${sg.shot.editierbar ? 'änderbar' : 'gesperrt: ' + esc(sg.shot.grund || '')}</span>`
+    : `<span class="cam" style="color:${tr.color}">${esc(tr.label)}</span> · ${esc(c.name)}`;
   $('tc').innerHTML = `<b>${clock(S.T, fps)}</b>` + (c ? ` · Clip ${tcClip(S.T - c.s, fps)} / ${tcClip(c.dur, fps)} · ${fps} fps` : '');
 }
 
 function setPlayIcons(on) { document.querySelectorAll('[data-act=play]').forEach((b) => { b.textContent = on ? '⏸' : '▶'; }); }
 async function play() {
   let c = shownClip();
-  if (!c) { const n = nextClipStart(S.T); if (!n) { log('play-ende'); return; } S.T = n.s; showFrame(true); c = n; }
+  if (!c) { const n = nextClipStart(S.T); if (!n) { log('play-ende'); return; } S.T = n.s; showFrame(true); c = shownClip(); if (!c) return; }
   if (c.missing) { toast('Datei fehlt: ' + c.file); log('play-datei-fehlt', { clip: c.id }); return; }
   if (video.dataset.cid !== c.id) showFrame(true);
   S.playing = true; setPlayIcons(true);
@@ -487,7 +582,7 @@ function jumpSec(sec) {
 /* ---------- Auswahl ---------- */
 const sels = () => S.state.selections;
 // Bildindex wie in applySeek(): das gerade angezeigte Bild ist floor(t·fps) → In/Out/±1 nutzen dieselbe Rundung
-const frameOf = (local, c) => Math.floor(local * c.fps + 1e-6);
+const frameOf = (local, c) => Math.floor(local * c.fps + 1e-4);
 function snap(local, c) { return clamp(frameOf(local, c) / c.fps, 0, c.dur); }
 function markIn() {
   const c = clipAt(S.activeTrack, S.T) || shownClip();
@@ -584,9 +679,9 @@ function stopCutRec() {
   log('cut-take', { cuts: take.cuts.length, von: +take.start.toFixed(2), bis: +take.end.toFixed(2) });
   changed(); toast(`${take.cuts.length} Cuts aufgenommen – Take antippen, ✕ löscht`);
 }
-function effectiveCuts() {
+function effectiveCuts(takes = S.state.takes) {
   const ev = [];
-  for (const tk of S.state.takes || []) {
+  for (const tk of takes || []) {
     if (tk.single) tk.cuts.forEach((ct, i) => ev.push({ id: tk.id, start: ct, end: ct, cuts: [ct], created: (tk.cutCreated || [])[i] || tk.created }));
     else ev.push(tk);
   }
@@ -602,7 +697,7 @@ function deleteTake(id) { S.state.takes = S.state.takes.filter((x) => x.id !== i
 /* ---------- Rückgängig / Wiederholen ----------
  * Nach jeder Änderung wird der Stand (Auswahl + Versatz) verglichen; Unterschiede kommen auf den Stapel. */
 const UNDO = []; const REDO = []; let lastSnap = null;
-const snapState = () => JSON.stringify({ sel: S.state.selections, off: S.state.offsets, takes: S.state.takes || [] });
+const snapState = () => JSON.stringify({ sel: S.state.selections, off: S.state.offsets, takes: S.state.takes || [], ev: S.state.ereignisse, bew: S.state.bewertungen });
 function resetHistory() { UNDO.length = 0; REDO.length = 0; lastSnap = snapState(); updateUndoBtns(); }
 function recordHistory() {
   const now = snapState();
@@ -613,6 +708,8 @@ function restoreSnap(js) {
   const d = JSON.parse(js);
   const keep = S.curSel && S.curSel.id;
   S.state.selections = d.sel; S.state.offsets = d.off; S.state.takes = d.takes || []; lastSnap = js;
+  if (d.ev) S.state.ereignisse = d.ev;
+  if (d.bew || S.state.bewertungen) S.state.bewertungen = d.bew || {};
   S.curSel = sels().find((x) => x.id === keep) || null;
   applyOffsets(); save(); renderSide(); requestDraw(); markSaved(false); showFrame(true); updateUndoBtns();
 }
@@ -647,7 +744,7 @@ function selLabel(s) {
 function renderSide() {
   const list = $('selList');
   const all = [...sels()].sort((a, b) => selRange(a)[0] - selRange(b)[0]);
-  $('selCount').textContent = `${all.filter((s) => s.kind === 'range').length} Clips · ${all.filter((s) => s.kind === 'marker').length} Marker`;
+  $('selCount').textContent = `${all.filter((s) => s.kind === 'range').length} ${isVersionView() ? 'Bereiche' : 'Clips'} · ${all.filter((s) => s.kind === 'marker').length} Marker`;
   list.innerHTML = '';
   for (const s of all) {
     const L = selLabel(s);
@@ -663,6 +760,7 @@ function renderSide() {
 function renderCurrent() {
   updateNoteTarget();
   const box = $('current'); const s = S.curSel;
+  if ((!s || !sels().includes(s)) && S.ver) { renderShotCard(box); return; }
   if (!s || !sels().includes(s)) { box.innerHTML = ''; return; }
   const L = selLabel(s);
   let h = `<div class="card-title"><span class="dot" style="background:${L.dot}"></span><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(L.l1)}</span>
@@ -696,6 +794,34 @@ function renderCurrent() {
     if (k.startsWith('dn')) { const n = s.notes[+k.slice(2)]; s.notes = s.notes.filter((x) => x !== n); return changed(); }
   });
 }
+/* ---------- Shot-Bewertung (Edit-Tab) ----------
+ * Jeder Shot der Version: ★ 1–3 oder Rot (= raus/ersetzen). Gilt für den sichtbaren Shot am Abspielzeiger.
+ * Gespeichert je Version in ctx.bewertungen {Shot-ID: {wert, t}}; geht mit in die Speicherdatei. */
+const shotNow = () => (S.ver ? shotAt(S.T - S.clips[0].s) : null);
+function renderShotCard(box) {
+  const sg = shotNow();
+  S.cardShot = sg ? sg.shot.id : null;
+  if (!sg) { box.innerHTML = ''; return; }
+  const sh = sg.shot, fps = S.ver.manifest.fps, b = (S.state.bewertungen || {})[sh.id], w = b ? b.wert : 0;
+  box.innerHTML = `<div class="card-title"><span class="dot" style="background:${sh.editierbar ? '#4c9aff' : '#6b6f76'}"></span>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Shot ${sh.nr} · ${esc(shotName(sh))}</span></div>
+    <div class="card-row"><span class="val">${clock(sh.v_in / fps, fps)} – ${clock(sh.v_out / fps, fps)} · ${durTxt((sh.v_out - sh.v_in) / fps)}</span></div>
+    <div class="hint" style="margin:2px 0 4px">${sh.editierbar ? 'Änderbar (Inhalt verschieben / tauschen folgt)' : 'Gesperrt: ' + esc(sh.grund || '') + ' – kommentierbar'}</div>
+    <div class="card-row stars">${[1, 2, 3].map((n) => `<button data-r="${n}" class="${w !== 'rot' && w >= n ? 'on' : ''}" title="${n} Stern${n > 1 ? 'e' : ''} (Taste ${n})">★</button>`).join('')}
+      <button data-r="rot" class="rot${w === 'rot' ? ' on' : ''}" title="Raus / ersetzen (Taste X)">✕ Rot</button></div>`;
+  box.querySelectorAll('[data-r]').forEach((x) => x.onclick = () => rateShot(x.dataset.r === 'rot' ? 'rot' : +x.dataset.r));
+}
+function rateShot(wert) {
+  const sg = shotNow(); if (!sg) { toast('Kein Shot am Abspielzeiger'); return; }
+  const B = S.state.bewertungen = S.state.bewertungen || {};
+  const id = sg.shot.id;
+  if (B[id] && B[id].wert === wert) delete B[id]; else B[id] = { wert, t: Date.now() };
+  log('shot-bewertung', { shot: id, nr: sg.shot.nr, wert: B[id] ? wert : null });
+  if (B[id] && navigator.vibrate) navigator.vibrate(10);
+  changed(); updateReelBar();
+}
+const RATE_COL = { 1: '#f2c14e', 2: '#f2c14e', 3: '#f2c14e', rot: '#ff453a' };
+
 /* ---------- Shortlist abspielen ----------
  * Nur die In/Out-Stellen chronologisch hintereinander – zum Bewerten mit Sternen. */
 let reel = null;
@@ -723,7 +849,9 @@ function updateReelBar() {
   el.querySelectorAll('[data-star]').forEach((b) => b.classList.toggle('on', !!s && s.stars >= +b.dataset.star));
 }
 function setStars(n) {
-  const s = (reel && reel.list[reel.i]) || S.curSel; if (!s || s.kind !== 'range') return;
+  const s = (reel && reel.list[reel.i]) || S.curSel;
+  if (S.ver && (!s || s.kind !== 'range' || !sels().includes(s))) { rateShot(n); return; }
+  if (!s || s.kind !== 'range') return;
   s.stars = s.stars === n ? 0 : n; log('sterne', { id: s.id, n: s.stars }); changed(); updateReelBar();
 }
 let selStop = null;
@@ -854,11 +982,12 @@ function draw() {
       }
     }
     ctx.fillStyle = c.missing ? '#000a' : '#0003'; ctx.fillRect(x0, yy, x1 - x0, hh);
+    if (S.ver && S.vsegs) drawShots(c, yy, hh, w);
     // Clip hat Auswahl → alles außerhalb ausgrauen (bleibt sichtbar, nur gedämpft)
     const cs = selByClip.get(c.id);
     if (cs) {
       const iv = cs.map((s) => [xOf(c.s + s.inT), xOf(c.s + s.outT)]).sort((a, b) => a[0] - b[0]);
-      if (S.proj.meta.kind === 'version') {
+      if (isVersionView()) {
         // Review einer Schnittversion: der kommentierte Bereich wird dunkler, der Rest bleibt normal
         ctx.fillStyle = 'rgba(0,0,0,0.45)';
         for (const [a, b] of iv) ctx.fillRect(a, yy, b - a, hh);
@@ -873,7 +1002,7 @@ function draw() {
     ctx.strokeStyle = trackOf(c.track).color; ctx.lineWidth = 1.5; if (FS) ctx.globalAlpha = 0.7;
     ctx.beginPath(); roundRect(x0 + 0.5, yy + 0.5, Math.max(2, x1 - x0 - 1), hh - 1, 5); ctx.stroke();
     ctx.globalAlpha = 1;
-    if (x1 - x0 > 70) {
+    if (x1 - x0 > 70 && !S.ver) {
       ctx.fillStyle = '#fff'; ctx.font = '600 11px -apple-system, Segoe UI, sans-serif';
       ctx.shadowColor = '#000'; ctx.shadowBlur = 3;
       ctx.fillText(c.name.replace(/_\d{6}_\w+\./, '.').replace(/\.(mov|mp4)$/i, ''), Math.max(x0, HEAD) + 5, yy + 13);
@@ -1006,6 +1135,36 @@ function draw() {
   ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, h); ctx.stroke();
   ctx.fillStyle = '#e5484d'; ctx.beginPath(); ctx.moveTo(px - 6, 0); ctx.lineTo(px + 6, 0); ctx.lineTo(px, 8); ctx.fill();
 }
+// Edit-Tab: Shots der Version auf der Spur – änderbare hell, gesperrte schraffiert (bleiben kommentierbar)
+function drawShots(c, yy, hh, w) {
+  for (const sg of S.vsegs) {
+    const a = xOf(c.s + sg.a), b = xOf(c.s + sg.b);
+    if (b < HEAD || a > w) continue;
+    const sh = sg.shot;
+    if (sh.editierbar) { ctx.fillStyle = 'rgba(76,154,255,0.22)'; ctx.fillRect(a, yy, b - a, hh); }
+    else {
+      ctx.save(); ctx.beginPath(); ctx.rect(a, yy, b - a, hh); ctx.clip();
+      ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = 1;
+      for (let x = a - hh; x < b; x += 8) { ctx.beginPath(); ctx.moveTo(x, yy + hh); ctx.lineTo(x + hh, yy); ctx.stroke(); }
+      ctx.restore();
+    }
+    const bw = (S.state.bewertungen || {})[sh.id];
+    if (bw) {
+      ctx.fillStyle = bw.wert === 'rot' ? 'rgba(255,69,58,0.38)' : 'rgba(242,193,78,0.16)'; ctx.fillRect(a, yy, b - a, hh);
+      ctx.fillStyle = RATE_COL[bw.wert]; ctx.fillRect(a, yy + hh - 5, b - a, 5);
+      if (b - a > 26) { ctx.font = '700 11px sans-serif'; ctx.fillText(bw.wert === 'rot' ? '✕' : '★'.repeat(bw.wert), Math.max(a, HEAD) + 5, yy + hh - 9); }
+    }
+    ctx.fillStyle = '#0b0b0d'; ctx.fillRect(a - 1, yy, 2, hh);
+    if (b - a > 34) {
+      ctx.save(); ctx.beginPath(); ctx.rect(a + 2, yy, b - a - 4, hh); ctx.clip();
+      ctx.fillStyle = sh.editierbar ? '#fff' : '#9a9ea6'; ctx.font = '600 11px -apple-system, Segoe UI, sans-serif';
+      ctx.fillText(`${sh.nr}`, Math.max(a, HEAD) + 5, yy + 13);
+      if (b - a > 70) { ctx.font = '11px -apple-system, Segoe UI, sans-serif'; ctx.fillText(shotName(sh), Math.max(a, HEAD) + 5, yy + 27); }
+      ctx.restore();
+    }
+  }
+}
+const shotName = (sh) => String(sh.name || sh.clip || '').replace(/_\d{6}_\w+$/, '').replace(/\.(mov|mp4|mxf)$/i, '');
 function roundRect(x, y, w, h, r) {
   ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
   ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
@@ -1220,16 +1379,16 @@ function offsetDialog(track) {
 
 /* ---------- Export / Laden ---------- */
 const blobToB64 = (b) => new Promise((res) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.readAsDataURL(b); });
-async function buildExport() {
-  const snapSel = JSON.parse(JSON.stringify(sels())), snapOff = JSON.parse(JSON.stringify(S.state.offsets));
-  let missingAudio = 0;
-  const out = {
-    format: 'bt-sichtung-auswahl', version: 1,
-    project: S.proj.meta.name, projectCreated: S.proj.meta.created,
-    exported: new Date().toISOString(), device: navigator.userAgent,
-    offsets: snapOff, tracks: S.proj.meta.tracks, selections: [],
-  };
-  for (const s of snapSel.sort((a, b) => selRange(a)[0] - selRange(b)[0])) {
+/* Stand-Export „bt-stand“ (Vertrag 4): konsistenter Snapshot des ganzen Projekts mit stand_id/revision.
+ * Shortlist-Kontext oben (wie v3 – import_auswahl.py liest das weiter), je Version ein Eintrag in `versionen`.
+ * Was fehlt (Audio einer Notiz, Video einer Version, Footage), steht in `probleme` und wird beim Speichern angezeigt. */
+async function exportCtx(ctx, view, probleme, wo) {
+  const byId = new Map(view.clips.map((c) => [c.id, c]));
+  const range = (s) => (s.kind === 'marker' ? s.t : (byId.get(s.clipId) ? byId.get(s.clipId).s + s.inT : 0));
+  const list = JSON.parse(JSON.stringify(ctx.selections)).sort((a, b) => range(a) - range(b));
+  const rel = (x) => +(view.isVersion ? x - view.base : ((x % 86400) + 86400) % 86400).toFixed(3);
+  const selections = []; let missingAudio = 0;
+  for (const s of list) {
     const notes = [];
     for (const n of s.notes) {
       const b = await DB.get('notes', n.id);
@@ -1237,23 +1396,63 @@ async function buildExport() {
       else missingAudio++;
     }
     const base = { id: s.id, kind: s.kind, stars: s.stars, text: s.text, created: new Date(s.created).toISOString(), notes };
-    if (s.kind === 'marker') { out.selections.push({ ...base, clock: clock(s.t), t: s.t }); continue; }
-    const c = S.byId.get(s.clipId);
-    out.selections.push({
-      ...base, track: s.track, clip: c.id, name: c.name, original: c.original, fps: c.fps,
+    if (s.kind === 'marker') {
+      selections.push(view.isVersion ? { ...base, t: rel(s.t), frame: Math.round(rel(s.t) * view.fps), clock: clock(rel(s.t), view.fps) }
+        : { ...base, clock: clock(s.t), t: s.t });
+      continue;
+    }
+    const c = byId.get(s.clipId);
+    if (!c) { probleme.push(`${wo}: Auswahl zu unbekanntem Clip ${s.clipId} ausgelassen`); continue; }
+    selections.push({
+      ...base, track: s.track, clip: view.isVersion ? 'version' : c.id, name: c.name, original: c.original, fps: c.fps,
       in: +s.inT.toFixed(4), out: +s.outT.toFixed(4),
       inFrame: Math.round(s.inT * c.fps), outFrame: Math.round(s.outT * c.fps), open: !!s.open,
       clockIn: clock(c.s + s.inT, c.fps), clockOut: clock(c.s + s.outT, c.fps),
     });
   }
-  if (missingAudio) { log('export-audio-fehlt', { n: missingAudio }); toast(`${missingAudio} Sprachnotiz(en) ohne Audio – steht im Log`, 3500); }
-  // Cut-Takt: Zeiten relativ zum Anfang (Schnittversion) bzw. als Uhrzeit (Footage-Projekt)
-  const isVersion = S.proj.meta.kind === 'version'; const base = isVersion ? S.clips[0].s : 0;
-  const fps = isVersion ? S.clips[0].fps : 25;
-  const rel = (x) => +(isVersion ? x - base : ((x % 86400) + 86400) % 86400).toFixed(3);
-  out.kind = S.proj.meta.kind || 'footage';
-  out.takes = JSON.parse(JSON.stringify(S.state.takes || [])).map((tk) => ({ id: tk.id, single: !!tk.single, start: rel(tk.start), end: rel(tk.end), created: new Date(tk.created).toISOString(), cuts: tk.cuts.map(rel), cutCreated: tk.cutCreated || null }));
-  out.cuts = effectiveCuts().map((c) => ({ t: rel(c.t), frame: Math.round(rel(c.t) * fps), tc: clock(rel(c.t), fps), take: c.take }));
+  if (missingAudio) probleme.push(`${wo}: ${missingAudio} Sprachnotiz(en) ohne Audio auf diesem Gerät`);
+  const takes = JSON.parse(JSON.stringify(ctx.takes || [])).map((tk) => ({ id: tk.id, single: !!tk.single, start: rel(tk.start), end: rel(tk.end), created: new Date(tk.created).toISOString(), cuts: tk.cuts.map(rel), cutCreated: tk.cutCreated || null }));
+  const cuts = effectiveCuts(ctx.takes).map((c) => ({ t: rel(c.t), frame: Math.round(rel(c.t) * view.fps), tc: clock(rel(c.t), view.fps), take: c.take }));
+  return { offsets: JSON.parse(JSON.stringify(ctx.offsets || {})), selections, takes, cuts };
+}
+// Shot-Bewertungen lesbar + maschinenlesbar (Shot-Instanz, Clip, Sequenzbilder [in, out))
+function shotRatings(v) {
+  const shots = new Map(v.manifest.shots.map((s) => [s.id, s]));
+  return Object.entries(v.ctx.bewertungen || {}).map(([id, b]) => {
+    const sh = shots.get(id) || {};
+    return { shot: id, nr: sh.nr, clip: sh.clip, name: sh.name, v_in: sh.v_in, v_out: sh.v_out, wert: b.wert, t: new Date(b.t).toISOString() };
+  }).sort((a, b) => (a.v_in || 0) - (b.v_in || 0));
+}
+async function buildExport() {
+  if (S.state) { S.state.activeTrack = S.activeTrack; S.state.T = S.T; S.state.pps = S.pps; }
+  const meta = S.proj.meta, probleme = [];
+  S.ps.revision = (S.ps.revision || 0) + 1;
+  const out = {
+    format: 'bt-stand', contract: 4, stand_id: 's-' + uid(), revision: S.ps.revision,
+    project_id: await projectIdOf(meta), project: meta.name, projectCreated: meta.created,
+    exported: new Date().toISOString(), device: navigator.userAgent, kind: meta.kind || 'footage',
+    tracks: meta.tracks,
+  };
+  const legacy = meta.kind === 'version'; // „Schnittversion prüfen“: ein Video ohne Manifest
+  const fv = { clips: S.footClips, isVersion: legacy, base: legacy ? S.footClips[0].s0 : 0, fps: legacy ? S.footClips[0].fps : 25 };
+  Object.assign(out, await exportCtx(S.ps.shortlist, fv, probleme, legacy ? 'Video' : 'Shortlist'));
+  if (S.proj.missing) probleme.push(`Footage: ${S.proj.missing} Dateien fehlen auf diesem Gerät (Auswahl bleibt erhalten)`);
+  out.versionen = [];
+  for (const v of S.ps.versions) {
+    const c = versionClip(v);
+    const vv = { clips: [c], isVersion: true, base: VBASE, fps: v.manifest.fps };
+    const x = await exportCtx(v.ctx, vv, probleme, verLabel(v));
+    if (!(await DB.get('files', v.file))) probleme.push(`${verLabel(v)}: Video fehlt auf diesem Gerät (Kommentare sind trotzdem gesichert)`);
+    out.versionen.push({ version_id: v.version_id, export_id: v.export_id, sequenz: v.manifest.sequenz, datei: v.datei, fps: v.manifest.fps,
+      timeline_fingerprint: v.manifest.timeline_fingerprint, importiert: new Date(v.imported).toISOString(),
+      ereignisse: JSON.parse(JSON.stringify(v.ctx.ereignisse || [])), kommentare: x.selections, takes: x.takes, cuts: x.cuts,
+      bewertungen: shotRatings(v) });
+  }
+  // Stände zu Versionen, die auf diesem Gerät (noch) nicht importiert sind, unverändert mitgeben – nichts geht verloren
+  for (const w of Object.values(S.ps.wartend || {})) { out.versionen.push(w); probleme.push(`${w.sequenz || w.version_id}: nur Stand, Version auf diesem Gerät nicht importiert`); }
+  out.probleme = probleme;
+  if (probleme.length) log('export-probleme', { n: probleme.length, erste: probleme[0] });
+  save();
   return out;
 }
 /* Speichern = Datei mit dem ganzen Arbeitsstand (Auswahl, Marker, Notizen, Versatz, Position).
@@ -1268,52 +1467,59 @@ async function saveFile() {
   const rev = S.rev;
   log('speichern-start', { eintraege: sels().length });
   const data = await buildExport();
-  data.view = { T: S.T, activeTrack: S.activeTrack, pps: S.pps };
+  data.view = { tab: S.ps.tab, version_id: S.ver ? S.ver.version_id : null, T: S.T, activeTrack: S.activeTrack, pps: S.pps };
   data.app = APP_VERSION; data.log = LOG.slice(-1500).map(logLine);
+  const nR = data.selections.filter((s) => s.kind === 'range').length;
+  const nN = data.selections.reduce((a, s) => a + s.notes.length, 0)
+    + data.versionen.reduce((a, v) => a + (v.kommentare || []).reduce((b, s) => b + (s.notes || []).length, 0), 0);
+  const nK = data.versionen.reduce((a, v) => a + (v.kommentare || []).length, 0);
+  const summary = `${nR} Clips, ${data.selections.length - nR} Marker` + (data.versionen.length ? `, ${data.versionen.length} Version${data.versionen.length > 1 ? 'en' : ''} mit ${nK} Kommentaren` : '') + `, ${nN} Sprachnotizen`;
+  const probHtml = data.probleme.length ? `<div class="problems"><b>${data.probleme.length} Hinweis${data.probleme.length > 1 ? 'e' : ''}:</b><ul>${data.probleme.map((p) => `<li>${esc(p)}</li>`).join('')}</ul></div>` : '';
+  const done = (wo) => {
+    if (!data.probleme.length) { toast(`Gespeichert: ${wo} (${summary})`, 3500); return; }
+    modal(`<h2>Gespeichert – mit Hinweisen</h2><p>${esc(wo)}<br>${summary}.</p>${probHtml}<div class="row"><span class="grow"></span><button class="primary" onclick="closeModal()">OK</button></div>`);
+  };
   const dir = await projectDir(true);
   if (dir) {
     try {
       await writeStand(dir, data);
       if (S.rev === rev) markSaved(true);
-      log('speichern-ordner', { datei: standName() });
-      toast(`Gespeichert: ${dir.name}/${standName()}`, 2500); return;
+      log('speichern-ordner', { datei: standName(), stand: data.stand_id });
+      done(`${dir.name}/${standName()}`); return;
     } catch (e) { log('speichern-ordner-fehler', { msg: e.message }); }
   }
   const name = saveName();
   const file = new File([JSON.stringify(data, null, 1)], name, { type: 'application/json' });
-  const nR = data.selections.filter((s) => s.kind === 'range').length;
-  const nN = data.selections.reduce((a, s) => a + s.notes.length, 0);
-  const summary = `${nR} Clips, ${data.selections.length - nR} Marker, ${nN} Sprachnotizen`;
   const download = () => {
     const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = name; a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
     if (S.rev === rev) markSaved(true);
-    log('speichern-datei', { name, aktuell: S.rev === rev });
+    log('speichern-datei', { name, aktuell: S.rev === rev, stand: data.stand_id });
   };
   const touch = matchMedia('(pointer: coarse)').matches;
   const canShare = navigator.canShare && navigator.canShare({ files: [file] });
-  if (!touch || !canShare) { download(); toast(`Gespeichert: ${name} (${summary}) – im Download-Ordner`, 4000); return; }
+  if (!touch || !canShare) { download(); done(`${name} im Download-Ordner`); return; }
   // iPad: Teilen braucht einen frischen Fingertipp → kurzer Dialog
-  modal(`<h2>Speichern</h2><p>${summary}.</p>
+  modal(`<h2>Speichern</h2><p>${summary}.</p>${probHtml}
     <p class="hint">„Teilen“ → „In Dateien sichern“ → z. B. in den OneDrive-Projektordner. Mit „Öffnen“ machst du später genau hier weiter – auch auf einem anderen Gerät.</p>
     <div class="row"><button id="mClose">Abbrechen</button><button id="mDl">Herunterladen</button><button id="mShare" class="primary">Teilen</button></div>`, (b) => {
     b.querySelector('#mClose').onclick = closeModal;
     b.querySelector('#mDl').onclick = () => { download(); closeModal(); };
     b.querySelector('#mShare').onclick = () => navigator.share({ files: [file], title: name })
-      .then(() => { if (S.rev === rev) markSaved(true); log('speichern-geteilt', { name }); closeModal(); toast('An „Teilen“ übergeben'); }).catch((e) => log('teilen-abgebrochen', { name: e.name }));
+      .then(() => { if (S.rev === rev) markSaved(true); log('speichern-geteilt', { name, stand: data.stand_id }); closeModal(); toast('An „Teilen“ übergeben'); }).catch((e) => log('teilen-abgebrochen', { name: e.name }));
   });
 }
 async function readSaveFile(f) {
   let d; try { d = JSON.parse(await f.text()); } catch { toast('Datei nicht lesbar'); return null; }
-  if (d.format !== 'bt-sichtung-auswahl') { toast('Keine Framepoint-Speicherdatei'); return null; }
+  if (d.format !== 'bt-sichtung-auswahl' && d.format !== 'bt-stand') { toast('Keine Framepoint-Speicherdatei'); return null; }
   return d;
 }
 async function openSaveFile(f) {
   const d = await readSaveFile(f); if (!d) return;
   if (d.project !== S.proj.meta.name) { toast(`Die Datei gehört zum Projekt „${d.project}“`); return; }
   const apply = () => loadSelection(d);
-  if (!sels().length || !S.dirty) return apply();
-  modal(`<h2>Stand öffnen?</h2><p>Deine aktuelle, nicht gespeicherte Auswahl wird durch den Stand aus der Datei ersetzt.</p>
+  if (!contexts(S.ps).some((c) => c.selections.length) || !S.dirty) return apply();
+  modal(`<h2>Stand öffnen?</h2><p>Dein aktueller, nicht gespeicherter Stand (Shortlist und Versionen) wird durch den Stand aus der Datei ersetzt.</p>
     <div class="row"><button id="mNo">Abbrechen</button><button id="mYes" class="primary">Öffnen</button></div>`, (b) => {
     b.querySelector('#mNo').onclick = closeModal;
     b.querySelector('#mYes').onclick = () => { closeModal(); apply(); };
@@ -1326,31 +1532,60 @@ async function openSaveFileFromHome(f) {
   await openProject(p.id);
   await loadSelection(d);
 }
-async function loadSelection(d) {
-  // Audio bisheriger Notizen bleibt erhalten (Undo kann darauf zurückgreifen); erst alles vorbereiten, dann übernehmen
-  if (!Array.isArray(d.selections)) { toast('Speicherdatei unvollständig'); return; }
+// Auswahl/Kommentare aus einer Speicherdatei in Kontext-Form bringen (Audio der Notizen landet in IndexedDB)
+async function importSels(arr, clipIdOf) {
   const list = []; let skipped = 0;
-  for (const x of d.selections) {
+  for (const x of arr || []) {
     const notes = [];
     for (const n of x.notes || []) {
-      const bin = Uint8Array.from(atob(n.data), (ch) => ch.charCodeAt(0));
-      await DB.put('notes', new Blob([bin], { type: n.mime }), n.id);
+      if (n.data) {
+        const bin = Uint8Array.from(atob(n.data), (ch) => ch.charCodeAt(0));
+        await DB.put('notes', new Blob([bin], { type: n.mime }), n.id);
+      }
       notes.push({ id: n.id, mime: n.mime, dur: n.dur, created: Date.parse(n.created) });
     }
     const base = { id: x.id, kind: x.kind, stars: x.stars || 0, text: x.text || '', notes, created: Date.parse(x.created) };
-    if (x.kind === 'marker') list.push({ ...base, t: x.t });
-    else if (S.byId.has(x.clip)) list.push({ ...base, clipId: x.clip, track: x.track, inT: x.in, outT: x.out, open: !!x.open });
+    if (x.kind === 'marker') { list.push({ ...base, t: x.t }); continue; }
+    const cid = clipIdOf(x);
+    if (cid) list.push({ ...base, clipId: cid, track: x.track, inT: x.in, outT: x.out, open: !!x.open });
     else skipped++;
   }
+  return { list, skipped };
+}
+const importTakes = (arr, base) => (arr || []).map((tk) => ({ id: tk.id, single: !!tk.single, start: base + tk.start, end: base + tk.end, created: Date.parse(tk.created) || Date.now(), cuts: tk.cuts.map((x) => base + x), ...(tk.cutCreated ? { cutCreated: tk.cutCreated } : {}) }));
+// Versions-Kontext aus einem `versionen`-Eintrag (Zeiten dort = Sekunden ab Versionsbeginn)
+async function ctxFromStand(v, ver, keep) {
+  const { list } = await importSels((v.kommentare || []).map((x) => (x.kind === 'marker' ? { ...x, t: VBASE + x.t } : x)), () => 'v:' + ver.export_id);
+  return newCtx({ ...(keep || {}), selections: list, offsets: {}, takes: importTakes(v.takes, VBASE), ereignisse: v.ereignisse || [], activeTrack: 'VERSION',
+    bewertungen: Object.fromEntries((v.bewertungen || []).map((b) => [b.shot, { wert: b.wert, t: Date.parse(b.t) || Date.now() }])) });
+}
+async function loadSelection(d) {
+  // Audio bisheriger Notizen bleibt erhalten (Undo kann darauf zurückgreifen); erst alles vorbereiten, dann übernehmen
+  if (!Array.isArray(d.selections)) { toast('Speicherdatei unvollständig'); return; }
+  const legacy = S.proj.meta.kind === 'version';
+  const f0 = S.footClips[0];
+  const footIds = new Set(S.footClips.map((c) => c.id));
+  const { list, skipped } = await importSels(d.selections, (x) => (legacy ? f0.id : footIds.has(x.clip) ? x.clip : null));
+  const tab = S.ps.tab, av = S.ps.activeVersion;
+  await enterContext('shortlist');
   S.state.selections = list; S.state.offsets = d.offsets || {};
-  if (Array.isArray(d.takes)) {
-    const base = S.proj.meta.kind === 'version' ? S.clips[0].s0 : (S.clips[0].s0 - (((S.clips[0].s0 % 86400) + 86400) % 86400));
-    S.state.takes = d.takes.map((tk) => ({ id: tk.id, single: !!tk.single, start: base + tk.start, end: base + tk.end, created: Date.parse(tk.created) || Date.now(), cuts: tk.cuts.map((x) => base + x), ...(tk.cutCreated ? { cutCreated: tk.cutCreated } : {}) }));
-  }
+  if (Array.isArray(d.takes)) S.state.takes = importTakes(d.takes, legacy ? f0.s0 : (f0.s0 - (((f0.s0 % 86400) + 86400) % 86400)));
   applyOffsets(); S.curSel = null;
-  if (d.view) { S.T = d.view.T ?? S.T; S.activeTrack = d.view.activeTrack || S.activeTrack; S.pps = d.view.pps || S.pps; }
-  closeModal(); changed(); showFrame(true); markSaved(true);
-  toast(`Stand geöffnet: ${list.length} Einträge` + (skipped ? ` (${skipped} Clips fehlen im Projekt)` : ''), 3500);
+  // Versionen: vorhandene übernehmen, fehlende als „wartend“ merken (werden beim Import der Version angewendet)
+  let nv = 0, nw = 0;
+  S.ps.wartend = {};
+  for (const v of d.versionen || []) {
+    const ver = S.ps.versions.find((x) => x.version_id === v.version_id);
+    if (ver) { ver.ctx = await ctxFromStand(v, ver); nv++; } else { S.ps.wartend[v.version_id] = v; nw++; }
+  }
+  if (d.view && (d.view.tab || 'shortlist') === 'shortlist') { S.T = d.view.T ?? S.T; S.activeTrack = d.view.activeTrack || S.activeTrack; S.pps = d.view.pps || S.pps; }
+  S.hist = {};
+  closeModal(); changed(); markSaved(true);
+  if (tab === 'edit' && S.ps.versions.some((v) => v.version_id === av)) await enterContext('edit', av);
+  else showFrame(true);
+  log('stand-geoeffnet', { format: d.format, stand: d.stand_id, auswahl: list.length, versionen: nv, wartend: nw });
+  toast(`Stand geöffnet: ${list.length} Einträge` + (nv ? ` · ${nv} Version${nv > 1 ? 'en' : ''}` : '') + (skipped ? ` (${skipped} Clips fehlen im Projekt)` : '')
+    + (nw ? ` · ${nw} Version${nw > 1 ? 'en' : ''} noch importieren` : ''), 4500);
 }
 
 /* ---------- Hilfe ---------- */
@@ -1365,6 +1600,7 @@ function help() {
     <li><b>Spurname antippen</b> = Spur verschieben, falls die Kamera-Uhr falsch ging.</li>
     <li>Lücken ohne Aufnahme sind auf 2 s gekürzt (gestrichelt, mit echter Dauer).</li>
     <li><b>Lange auf die Timeline oder aufs Video drücken</b> = IN am Abspielzeiger, nochmal lange drücken = OUT. Beliebig viele Stellen pro Clip; alles außerhalb wird ausgegraut. Lange auf einen gelben Rand drücken = Lupe zum Feinjustieren.</li>
+    <li><b>Shortlist | Edit</b> oben: <b>Shortlist</b> = Footage sichten. <b>Edit</b> = eine Schnittversion dieses Drehs ansehen und kommentieren. Mit <b>Edit ▾</b> Versionen wählen oder importieren (im Ordner <i>Versionen</i> Video + gleichnamige .json auswählen). Jede Version hat eigene Kommentare, Cut-Takes, Position und Rückgängig. Die Spur zeigt die Shots der Version: blau = änderbar, schraffiert = gesperrt (kommentierbar). ⏮ ⏭ springen von Shot zu Shot. Rechts: Shot am Abspielzeiger mit <b>★ 1–3</b> oder <b>✕ Rot</b> (= raus/ersetzen) bewerten, Tasten 1–3 / X.</li>
     <li><b>Schnittversion prüfen</b> (Startseite): ein fertiges Video laden. <b>✂</b> in der Leiste öffnet den Cut-Takt: <b>▶</b> startet die Takt-Aufnahme nach 3-2-1, <b>✂</b> setzt Cuts (ohne Aufnahme: ein einzelner Cut am Abspielzeiger), rotes <b>■</b> stoppt. Jede Aufnahme ist ein Take (gelbe Striche); neuere Takes ersetzen ältere in ihrem Bereich. Take antippen → ✕ löscht. Am PC: B = Aufnahme, C = Cut, V = Stopp.</li>
     <li><b>▶★ Shortlist abspielen</b>: spielt nur deine In/Out-Stellen nacheinander; oben ★★★ zum Bewerten (Taste 1–3), ⏮ ⏭ = vorige/nächste Stelle, Play/Pause beendet.</li>
     <li><b>💬 Kommentar-Zeile</b> unter den Spuren antippen = Marker am Abspielzeiger + Sprachnotiz startet sofort (🎙 nochmal = Ende). Vorhandenen Kommentar antippen = auswählen. Bereich kommentieren: IN/OUT setzen + Notiz – bei Schnittversionen wird der Bereich dunkler.</li>
@@ -1472,6 +1708,7 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'r') ACT.reel();
   else if (k === '1' || k === '2' || k === '3') setStars(+k);
   else if (k === 'v' && CUT.mode) stopCutRec();
+  else if (k === 'x' && S.ver) rateShot('rot');
   else if (k === 'escape' && S.fs) toggleFS(false);
   else if (k === 'i') ACT.in(); else if (k === 'o') ACT.out(); else if (k === 'm') ACT.marker(); else if (k === 'n') ACT.rec();
   else if (k === 'arrowup') { const i = S.tracks.findIndex((t) => t.id === S.activeTrack); S.activeTrack = S.tracks[Math.max(0, i - 1)].id; showFrame(true); requestDraw(); }
@@ -1508,6 +1745,116 @@ async function importVersion(f) {
   log('version-import', { name, dauer: +dur.toFixed(2), mb: +(blob.size / 1e6).toFixed(1) });
   closeModal(); await showHome(); openProject(id);
 }
+
+/* ---------- Versionen (v4): MP4 + gleichnamige JSON aus OneDrive\Sichtung\<Projekt>\Versionen ----------
+ * Import prüft das Paar (F01): Format/Vertrag, Projekt-ID, SHA-1 des Videos = export.sha1, Länge = dauer_frames.
+ * Gleiche version_id (gleiche Timeline) mit neuem Export → Video wird ersetzt, Kommentare/Änderungen bleiben. */
+function versionSheet() {
+  const vs = S.ps.versions, w = Object.values(S.ps.wartend || {});
+  const row = (v) => {
+    const m = v.manifest, n = m.shots.length, ne = m.shots.filter((s) => s.editierbar).length;
+    const nk = v.ctx.selections.length, nev = (v.ctx.ereignisse || []).length;
+    const br = Object.values(v.ctx.bewertungen || {}), nrot = br.filter((x) => x.wert === 'rot').length;
+    return `<div class="ver${S.ver === v ? ' cur' : ''}"><div class="info"><div class="name">${esc(m.sequenz)}</div>
+      <div class="meta">${durTxt(m.dauer_frames / m.fps)} · ${ne} von ${n} Shots änderbar · ${nk} Kommentar${nk === 1 ? '' : 'e'}${nev ? ` · ${nev} Änderung${nev === 1 ? '' : 'en'}` : ''}${br.length ? ` · ${br.length} bewertet${nrot ? ` (${nrot} rot)` : ''}` : ''}<br>
+      importiert ${new Date(v.imported).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' })}</div></div>
+      <button class="primary" data-open="${esc(v.version_id)}">Öffnen</button><button class="ghost danger" data-del="${esc(v.version_id)}" title="Version vom Gerät entfernen">✕</button></div>`;
+  };
+  modal(`<h2>Versionen</h2>
+    <div class="ver-list">${vs.length ? vs.map(row).join('') : '<p class="hint">Noch keine Version in diesem Projekt.</p>'}
+    ${w.map((x) => `<div class="ver wait"><div class="info"><div class="name">${esc(x.sequenz || x.version_id)}</div><div class="meta">Stand vorhanden – Video + JSON noch importieren</div></div></div>`).join('')}</div>
+    <label class="import-btn"><input id="verInput" type="file" multiple accept=".json,.mp4,application/json,video/mp4"><span>＋ Version importieren</span></label>
+    <p class="hint">Im Ordner <b>Versionen</b> das Video <b>und</b> die gleichnamige .json auswählen. Die App prüft, ob beide zusammengehören.</p>
+    <div class="row"><span class="grow"></span><button id="mOk">Schließen</button></div>`, (b) => {
+    b.querySelector('#mOk').onclick = closeModal;
+    b.querySelector('#verInput').onchange = (e) => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) importVersionPair(fs); };
+    b.querySelectorAll('[data-open]').forEach((x) => x.onclick = () => { closeModal(); enterContext('edit', x.dataset.open); });
+    b.querySelectorAll('[data-del]').forEach((x) => x.onclick = () => deleteVersion(S.ps.versions.find((v) => v.version_id === x.dataset.del)));
+  });
+}
+function importError(msg, data) {
+  log('version-abgelehnt', { grund: msg, ...(data || {}) });
+  modal(`<h2>Version nicht importiert</h2><p>${esc(msg)}</p><div class="row"><span class="grow"></span><button class="primary" id="mOk">OK</button></div>`,
+    (b) => { b.querySelector('#mOk').onclick = versionSheet; });
+}
+async function importVersionPair(files) {
+  const jsons = files.filter((f) => /\.json$/i.test(f.name));
+  const vids = files.filter((f) => /\.(mp4|mov|m4v)$/i.test(f.name));
+  if (!jsons.length) return importError('Die JSON-Datei zur Version fehlt. Bitte Video und gleichnamige .json zusammen auswählen.');
+  if (!vids.length) return importError('Das Video zur Version fehlt. Bitte Video und gleichnamige .json zusammen auswählen.');
+  let m = null;
+  for (const f of jsons) {
+    try { const d = JSON.parse(await f.text()); if (d.format === 'bt-version') { m = d; break; } } catch { /* nächste Datei */ }
+  }
+  if (!m) return importError('Keine Versionsdatei (bt-version) in der Auswahl.');
+  if (m.contract !== 4) return importError(`Versionsdatei hat Vertrag ${m.contract}, die App erwartet 4 – bitte mit version_export.py neu erzeugen.`);
+  const pid = await projectIdOf(S.proj.meta);
+  if (m.project_id !== pid) return importError(`Die Version gehört zu einem anderen Projekt („${m.projekt || m.project_id}“).`, { soll: pid, ist: m.project_id });
+  const vf = vids.find((f) => f.name === m.export.datei) || (vids.length === 1 && jsons.length === 1 ? vids[0] : null);
+  if (!vf) return importError(`Zur JSON gehört das Video „${m.export.datei}“ – es ist nicht in der Auswahl.`);
+  modal(`<h2>Version ${esc(m.sequenz)}</h2><div class="progress"><div id="impBar" style="width:15%"></div></div><p id="impTxt" class="hint">Video wird auf das Gerät kopiert …</p>`);
+  let buf;
+  try { buf = await vf.arrayBuffer(); } catch (e) { return importError('Video ließ sich nicht lesen: ' + e.message); }
+  $('impBar').style.width = '55%'; $('impTxt').textContent = 'Prüfsumme wird berechnet …';
+  const sha = await sha1hex(buf);
+  if (sha !== m.export.sha1) return importError('Video und JSON passen nicht zusammen (Prüfsumme). Vermutlich wurde das Video neu exportiert – JSON mit version_export.py neu erzeugen.', { video: sha.slice(0, 10), json: m.export.sha1.slice(0, 10) });
+  const blob = new Blob([buf], { type: 'video/mp4' }); buf = null;
+  $('impBar').style.width = '75%'; $('impTxt').textContent = 'Länge wird geprüft …';
+  const dur = await new Promise((res) => {
+    const v = document.createElement('video'); v.preload = 'metadata'; v.muted = true;
+    v.onloadedmetadata = () => { res(v.duration); URL.revokeObjectURL(v.src); }; v.onerror = () => res(0); v.src = URL.createObjectURL(blob);
+  });
+  const frames = Math.round(dur * m.fps);
+  if (!dur || Math.abs(frames - m.dauer_frames) > 2) return importError(`Länge passt nicht (Video ${frames} Bilder, JSON ${m.dauer_frames}).`);
+  const key = `${S.proj.id}/versionen/${m.export.export_id}.mp4`;
+  await DB.put('files', blob, key);
+  $('impBar').style.width = '100%';
+  let ver = S.ps.versions.find((v) => v.version_id === m.version_id);
+  const info = { export_id: m.export.export_id, datei: vf.name, file: key, dur: m.dauer_frames / m.fps, imported: Date.now(), manifest: m };
+  let neu = false;
+  if (ver) {
+    if (ver.file !== key) { await DB.del('files', ver.file).catch(() => {}); S.urls.delete('v:' + ver.export_id); }
+    const oldId = 'v:' + ver.export_id;
+    Object.assign(ver, info);
+    for (const s of ver.ctx.selections) if (s.clipId === oldId) s.clipId = 'v:' + ver.export_id;
+  } else {
+    ver = { version_id: m.version_id, ...info, ctx: newCtx({ ereignisse: [], activeTrack: 'VERSION' }) };
+    const w = S.ps.wartend && S.ps.wartend[m.version_id];
+    if (w) { ver.ctx = await ctxFromStand(w, ver); delete S.ps.wartend[m.version_id]; }
+    S.ps.versions.push(ver); neu = true;
+  }
+  S.proj.bytes = (S.proj.bytes || 0) + blob.size; DB.put('projects', S.proj);
+  log('version-import', { version: m.version_id, export: m.export.export_id, mb: +(blob.size / 1e6).toFixed(1), neu, shots: m.shots.length });
+  closeModal();
+  save(true);
+  await enterContext('edit', ver.version_id);
+  toast(neu ? `Version ${verLabel(ver)} importiert – ${m.shots.filter((s) => s.editierbar).length} Shots änderbar` : `Version ${verLabel(ver)} aktualisiert – Kommentare bleiben`, 4000);
+}
+function deleteVersion(v) {
+  if (!v) return;
+  const nk = v.ctx.selections.length + (v.ctx.ereignisse || []).length;
+  modal(`<h2>Version entfernen?</h2><p>„${esc(v.manifest.sequenz)}“ wird von diesem Gerät entfernt${nk ? `, mit ${nk} Kommentaren/Änderungen. Vorher speichern, falls du sie noch brauchst` : ''}.</p>
+    <div class="row"><button id="mNo">Abbrechen</button><button id="mYes" class="primary">Entfernen</button></div>`, (b) => {
+    b.querySelector('#mNo').onclick = versionSheet;
+    b.querySelector('#mYes').onclick = async () => {
+      if (S.ver === v) await enterContext('shortlist');
+      await DB.del('files', v.file).catch(() => {});
+      for (const s of v.ctx.selections) for (const n of s.notes || []) await DB.del('notes', n.id).catch(() => {});
+      S.urls.delete('v:' + v.export_id); delete S.hist[v.version_id];
+      S.ps.versions = S.ps.versions.filter((x) => x !== v);
+      log('version-entfernt', { version: v.version_id });
+      save(true); renderTabs(); versionSheet();
+    };
+  });
+}
+document.querySelectorAll('#tabs [data-tab]').forEach((b) => b.addEventListener('click', () => {
+  if (!S.ps) return;
+  log('knopf', { act: 'tab-' + b.dataset.tab });
+  if (b.dataset.tab === 'shortlist') { if (S.ver) enterContext('shortlist'); return; }
+  if (S.ver || !S.ps.versions.length) { versionSheet(); return; }
+  const v = S.ps.versions.find((x) => x.version_id === S.ps.activeVersion) || S.ps.versions[S.ps.versions.length - 1];
+  enterContext('edit', v.version_id);
+}));
 
 /* ---------- PC (Chrome/Edge): Projektordner direkt öffnen, Stand-Datei liegt im Ordner ----------
  * iPad-Safari kann nicht in Ordner schreiben → dort bleibt Speichern über „Teilen“. */
@@ -1564,8 +1911,9 @@ document.addEventListener('visibilitychange', () => {
   await showHome();
   { const hi = new Image(); hi.onload = () => $('hero').classList.add('has-img'); hi.src = 'hero.jpg'; }
   // ?import=<Pfad>/ lädt einen Projektordner vom selben Server (Testserver am PC, ohne Dateiauswahl)
-  const imp = new URLSearchParams(location.search).get('import');
-  if (imp) {
+  const q = new URLSearchParams(location.search);
+  const imp = q.get('import');
+  if (imp && !/^[a-z]+:|^\/\//i.test(imp)) { // nur Ordner derselben Seite
     history.replaceState(null, '', location.pathname);
     const base = imp.endsWith('/') ? imp : imp + '/';
     const meta = await (await fetch(base + 'projekt.json')).json();
@@ -1573,6 +1921,20 @@ document.addEventListener('visibilitychange', () => {
     const lazy = meta.clips.flatMap((c) => [c.file, c.sprite]).map((n) => ({
       name: n, arrayBuffer: async () => (await fetch(base + encodeURIComponent(n))).arrayBuffer(),
     }));
-    importFiles([...files, ...lazy]);
+    await importFiles([...files, ...lazy]);
+    // &version=<Pfad zur JSON> (mehrfach möglich): Version gleich mit importieren – für Tests ohne Dateiauswahl
+    const vers = q.getAll('version');
+    const p = (await DB.all('projects')).find((x) => x.meta.name === meta.name);
+    if (p && vers.length) {
+      await openProject(p.id);
+      for (const vj of vers) {
+        if (/^[a-z]+:|^\/\//i.test(vj)) { log('version-url-abgelehnt', { vj }); continue; } // nur Pfade derselben Seite
+        const jb = await (await fetch(vj)).blob();
+        const m = JSON.parse(await jb.text());
+        const dir = vj.slice(0, vj.lastIndexOf('/') + 1);
+        const vb = await (await fetch(dir + encodeURIComponent(m.export.datei))).blob();
+        await importVersionPair([new File([jb], vj.split('/').pop()), new File([vb], m.export.datei, { type: 'video/mp4' })]);
+      }
+    }
   }
 })();
