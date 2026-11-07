@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.2';
+const APP_VERSION = 'v4.3';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -516,8 +516,13 @@ function applySeek() {
 video.addEventListener('seeked', () => { if (seekWanted != null && !S.playing) applySeek(); });
 
 function updateNoteTarget() {
-  const s = (S.curSel && sels().includes(S.curSel) ? S.curSel : null) || selAtPlayhead();
   const el = $('noteTarget'); if (!el) return;
+  const cs = S.curSel && sels().includes(S.curSel) ? S.curSel : null;
+  if (S.ver && !cs) {
+    const sg = shotNow();
+    if (sg) { el.innerHTML = `🎙 Notiz zu: <b>Shot ${sg.shot.nr}</b> ${esc(shotName(sg.shot))}`; el.classList.add('on'); return; }
+  }
+  const s = cs || selAtPlayhead();
   if (!s) { el.textContent = '🎙 keine Auswahl hier → wird Marker'; el.classList.remove('on'); return; }
   const L = selLabel(s);
   el.innerHTML = `🎙 Notiz zu: <b>${esc(L.l1.replace(/^.*· /, ''))}</b> ${esc(L.l2.split(' · ').slice(0, 2).join(' · '))}${s.notes.length ? ` · ${s.notes.length} Notiz${s.notes.length > 1 ? 'en' : ''}` : ''}`;
@@ -527,7 +532,12 @@ function updateHud(c) {
   const fps = c ? c.fps : 25;
   const tr = c && S.tracks.find((t) => t.id === c.track);
   const sg = c && S.ver ? shotAt(S.T - c.s) : null;
-  if (S.ver && (sg ? sg.shot.id : null) !== S.cardShot && (!S.curSel || !sels().includes(S.curSel))) renderCurrent();
+  if (S.ver && (sg ? sg.shot.id : null) !== S.cardShot) {
+    const cs = S.curSel && sels().includes(S.curSel) ? S.curSel : null;
+    const inScene = cs && sg && (() => { const [a, b] = selRange(cs); return b >= c.s + sg.a && a < c.s + sg.b; })();
+    if (cs && !inScene) { S.curSel = null; renderSide(); } else if (!S.curSel) renderCurrent();
+    updateNoteTarget();
+  }
   $('hud').innerHTML = !c ? '' : sg
     ? `<span class="cam">Shot ${sg.shot.nr}</span> · ${esc(shotName(sg.shot))} · <span class="${sg.shot.editierbar ? 'ok' : 'lock'}">${sg.shot.editierbar ? 'änderbar' : 'gesperrt: ' + esc(sg.shot.grund || '')}</span>`
     : `<span class="cam" style="color:${tr.color}">${esc(tr.label)}</span> · ${esc(c.name)}`;
@@ -784,6 +794,10 @@ function jumpTo(s) {
 /* ---------- Seitenleiste ---------- */
 function trackOf(id) { return S.tracks.find((t) => t.id === id) || { label: id, color: '#888' }; }
 function selLabel(s) {
+  if (s.kind === 'marker' && s.shot && S.ver) {
+    const sh = S.ver.manifest.shots.find((x) => x.id === s.shot);
+    return { dot: '#4c9aff', l1: `💬 Shot ${sh ? sh.nr : '?'} · ${sh ? shotName(sh) : ''}`, l2: s.text || '' };
+  }
   if (s.kind === 'marker') return { dot: '#fff', l1: `⚑ Marker ${clock(s.t)}`, l2: s.text || '' };
   const c = S.byId.get(s.clipId); const tr = trackOf(s.track);
   return { dot: tr.color, l1: `${tr.label} · ${c.name}`, l2: `${clock(c.s + s.inT)} · ${s.open ? 'nur IN – OUT fehlt' : durTxt(s.outT - s.inT)}${s.text ? ' · ' + s.text : ''}` };
@@ -845,6 +859,12 @@ function renderCurrent() {
  * Jeder Shot der Version: ★ 1–3 oder Rot (= muss auf jeden Fall raus; reine Markierung, es wird nichts entfernt). Gilt für den sichtbaren Shot am Abspielzeiger.
  * Gespeichert je Version in ctx.bewertungen {Shot-ID: {wert, t}}; geht mit in die Speicherdatei. */
 const shotNow = () => (S.ver ? shotAt(S.T - S.clips[0].s) : null);
+// Kommentar zur Szene = Marker mit shot-ID (einer je Szene); create=true legt ihn am Abspielzeiger an
+function shotComment(sh, create) {
+  let m = sels().find((x) => x.kind === 'marker' && x.shot === sh.id);
+  if (!m && create) { m = { id: uid(), kind: 'marker', shot: sh.id, t: S.T, stars: 0, text: '', notes: [], created: Date.now() }; sels().push(m); }
+  return m || null;
+}
 function renderShotCard(box) {
   const sg = shotNow();
   S.cardShot = sg ? sg.shot.id : null;
@@ -856,8 +876,18 @@ function renderShotCard(box) {
     <div class="hint" style="margin:2px 0 4px">${sh.editierbar ? 'Änderbar (Inhalt verschieben / tauschen folgt)' : 'Gesperrt: ' + esc(sh.grund || '') + ' – kommentierbar'}</div>
     <div class="card-row stars">${[1, 2, 3].map((n) => `<button data-r="${n}" class="${w !== 'rot' && w >= n ? 'on' : ''}" title="${n} Stern${n > 1 ? 'e' : ''} (Taste ${n})">★</button>`).join('')}
       <button data-r="rot" class="rot${w === 'rot' ? ' on' : ''}" title="Muss auf jeden Fall raus (Taste X)">✕ Muss raus</button></div>
-    <div class="hint">★ brauchbar · ★★ gut · ★★★ Favorit · <b>Muss raus</b> = darf auf keinen Fall drin bleiben (wird nur markiert). Ohne Bewertung = noch offen.</div>`;
+    <div class="hint">★ brauchbar · ★★ gut · ★★★ Favorit · <b>Muss raus</b> = darf auf keinen Fall drin bleiben (wird nur markiert). Ohne Bewertung = noch offen.</div>
+    <input type="text" id="shotText" placeholder="Kommentar zu dieser Szene" value="${esc((shotComment(sh) || {}).text || '')}">
+    <div class="notes">${((shotComment(sh) || {}).notes || []).map((n, i) => `<div class="note">🎙 Sprachnotiz ${i + 1} · ${n.dur ? n.dur.toFixed(0) + ' s' : ''}
+      <button data-pn="${i}">▶</button><button data-dn="${i}" class="ghost danger">✕</button></div>`).join('')}
+      <button data-k="rec" class="rec-scene">🎙 Sprachnotiz zu dieser Szene</button></div>`;
   box.querySelectorAll('[data-r]').forEach((x) => x.onclick = () => rateShot(x.dataset.r === 'rot' ? 'rot' : +x.dataset.r));
+  const ti = box.querySelector('#shotText');
+  ti.oninput = (e) => { const m = shotComment(sh, true); m.text = e.target.value; save(); };
+  ti.onchange = () => { const m = shotComment(sh); if (m && !m.text && !m.notes.length) S.state.selections = sels().filter((x) => x !== m); changed(); };
+  box.querySelector('[data-k=rec]').onclick = () => toggleRec();
+  box.querySelectorAll('[data-pn]').forEach((x) => x.onclick = () => playNote(shotComment(sh).notes[+x.dataset.pn]));
+  box.querySelectorAll('[data-dn]').forEach((x) => x.onclick = () => { const m = shotComment(sh); m.notes = m.notes.filter((_, i) => i !== +x.dataset.dn); changed(); });
 }
 function rateShot(wert) {
   const sg = shotNow(); if (!sg) { toast('Kein Shot am Abspielzeiger'); return; }
@@ -917,7 +947,7 @@ function selAtPlayhead() {
   const hits = sels().filter((x) => x.kind === 'range' && (() => { const [a, b] = selRange(x); return S.T >= a && S.T <= b; })());
   return hits.find((x) => x.track === S.activeTrack) || hits[0] || null;
 }
-const recBtns = (on) => document.querySelectorAll('[data-act=rec]').forEach((b) => b.classList.toggle('on', on));
+const recBtns = (on) => document.querySelectorAll('[data-act=rec], .rec-scene').forEach((b) => b.classList.toggle('on', on));
 async function toggleRec() {
   if (rec) { rec.stop(); return; }
   if (recStarting) return;
@@ -929,9 +959,10 @@ async function toggleRec() {
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
   catch (e) { recStarting = false; log('mikro-fehler', { name: e.name, msg: e.message }); toast('Kein Mikrofonzugriff – in den Einstellungen erlauben'); return; }
+  if (!s && S.ver && shotNow()) s = shotComment(shotNow().shot, true); // Edit-Tab: Szene am Abspielzeiger
   if (!s) s = selAtPlayhead();
   if (!s) { s = addMarker(); toast('Keine Auswahl am Abspielzeiger → Notiz als Marker gespeichert'); }
-  S.curSel = s; renderSide();
+  S.curSel = s.shot ? null : s; renderSide();
   const target = { pid: S.proj.id, ctx: ctxObj, selId: s.id, t: S.T };
   const chunks = []; const t0 = Date.now();
   let r;
@@ -950,7 +981,7 @@ async function toggleRec() {
     let dest = list.find((x) => x.id === target.selId);
     if (!dest) { dest = { id: uid(), kind: 'marker', t: target.t, stars: 0, text: '', notes: [], created: Date.now() }; list.push(dest); toast('Auswahl war weg → Notiz als Marker gespeichert'); }
     dest.notes.push(n);
-    if (S.state === target.ctx) S.curSel = dest;
+    if (S.state === target.ctx && !dest.shot) S.curSel = dest;
     log('notiz-ende', { s: n.dur.toFixed(1), zu: dest.id });
     changed();
   };
@@ -1372,6 +1403,7 @@ function endPointer(e) {
   if (g.lpDone) { g = null; requestDraw(); return; }
   if (!g.moved && !g.fine && g.type === 'comment') {
     if (g.marker) { S.curSel = g.marker; log('kommentar-gewaehlt', { id: g.marker.id }); renderSide(); }
+    else if (S.ver && shotNow()) { S.curSel = null; log('kommentar-szene', { pos: +S.T.toFixed(3) }); toggleRec(); }
     else { S.curSel = addMarker(); log('kommentar-neu', { pos: +S.T.toFixed(3) }); toggleRec(); }
     g = null; requestDraw(); return;
   }
@@ -1453,7 +1485,7 @@ async function exportCtx(ctx, view, probleme, wo) {
       if (b) notes.push({ id: n.id, mime: n.mime, dur: n.dur, created: new Date(n.created).toISOString(), data: await blobToB64(b) });
       else missingAudio++;
     }
-    const base = { id: s.id, kind: s.kind, stars: s.stars, text: s.text, created: new Date(s.created).toISOString(), notes };
+    const base = { id: s.id, kind: s.kind, stars: s.stars, text: s.text, created: new Date(s.created).toISOString(), notes, ...(s.shot ? { shot: s.shot } : {}) };
     if (s.kind === 'marker') {
       selections.push(view.isVersion ? { ...base, t: rel(s.t), frame: Math.round(rel(s.t) * view.fps), clock: clock(rel(s.t), view.fps) }
         : { ...base, clock: clock(s.t), t: s.t });
@@ -1622,7 +1654,7 @@ async function importSels(arr, clipIdOf) {
       notes.push({ id: n.id, mime: n.mime, dur: n.dur, created: Date.parse(n.created) });
     }
     const base = { id: x.id, kind: x.kind, stars: x.stars || 0, text: x.text || '', notes, created: Date.parse(x.created) };
-    if (x.kind === 'marker') { list.push({ ...base, t: x.t }); continue; }
+    if (x.kind === 'marker') { list.push({ ...base, t: x.t, ...(x.shot ? { shot: x.shot } : {}) }); continue; }
     const cid = clipIdOf(x);
     if (cid) list.push({ ...base, clipId: cid, track: x.track, inT: x.in, outT: x.out, open: !!x.open });
     else skipped++;

@@ -223,3 +223,5 @@ body.fs .reel-bar { top: max(12px, var(--safe-t)); }
 .hud .lock { color: #b8bcc2; }
 .stars button.rot { font-size: 15px; font-weight: 700; color: #6b6f76; margin-left: 10px; border: 1px solid #3a3a3e; border-radius: 10px; padding: 0 12px; }
 .stars button.rot.on { color: #fff; background: var(--red); border-color: var(--red); }
+.rec-scene { margin-top: 6px; min-height: 44px; width: 100%; background: var(--panel2); }
+.current #shotText { margin-top: 8px; }
