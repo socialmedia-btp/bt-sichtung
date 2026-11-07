@@ -2,14 +2,22 @@
   "name": "Framepoint by Blue Tacit",
   "short_name": "Framepoint",
   "description": "Footage sichten und In/Out-Auswahl für die Bluetacit-Pipeline",
-  "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#0b0b0d",
   "theme_color": "#0b0b0d",
   "icons": [
-    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
   ]
 }

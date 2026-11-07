@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.7';
+const APP_VERSION = 'v4.7a';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -204,11 +204,30 @@ let angebotLauf = 0;
 async function bkAngeboteZeigen() {
   const box = $('bkAngebote'); if (!box) return;
   const lauf = ++angebotLauf;
+  const links = await bkAlleLinks().catch(() => []);
   const liste = await bkOffen().catch(() => []);
   if (lauf !== angebotLauf || $('home').classList.contains('hidden')) return;
-  box.innerHTML = liste.map(angebotHtml).join('');
+  box.innerHTML = liste.map(angebotHtml).join('')
+    // Home-Bildschirm-App ohne Link (z. B. vorher ohne Link hinzugefügt): Link aus der Nachricht einfügen
+    + (!links.length && standalone() ? `<div class="proj neu"><div class="info"><div class="name">🔗 Feedback-Link von Blue Tacit</div>
+      <div class="meta">Link aus der Nachricht kopieren und hier einfügen</div></div><button class="primary" id="bkPaste">Link einfügen</button></div>` : '');
   box.querySelectorAll('[data-laden]').forEach((b) => b.onclick = () => bkLaden(liste[+b.dataset.laden]));
+  const pb = $('bkPaste'); if (pb) pb.onclick = bkLinkEinfuegen;
   if (liste.length) log('versionen-angeboten', { n: liste.length });
+}
+function bkLinkEinfuegen() {
+  modal(`<h2>Feedback-Link einfügen</h2><p class="hint">In der Nachricht von Blue Tacit den Link lange drücken → „Kopieren“, dann hier ins Feld tippen → „Einfügen“.</p>
+    <input id="bkIn" type="url" placeholder="https://socialmedia-btp.github.io/bt-sichtung/?bk=…" style="width:100%;min-height:44px">
+    <div class="row"><button id="bkNo">Abbrechen</button><button id="bkOk" class="primary">Übernehmen</button></div>`, (b) => {
+    b.querySelector('#bkNo').onclick = closeModal;
+    b.querySelector('#bkOk').onclick = async () => {
+      const t = b.querySelector('#bkIn').value.trim();
+      const m = t.match(/[?&]bk=([A-Za-z0-9_-]{20,64})/) || t.match(/^([A-Za-z0-9_-]{20,64})$/);
+      if (!m) { toast('Das ist kein Feedback-Link – bitte den ganzen Link einfügen', 4000); return; }
+      log('bk-link-eingefuegt');
+      closeModal(); await bkSetup(m[1], null);
+    };
+  });
 }
 async function bkLaden({ link, v }) {
   const q = (x) => `k=${encodeURIComponent(link.key)}&e=${encodeURIComponent(v.export_id)}`;
@@ -2316,8 +2335,11 @@ document.addEventListener('visibilitychange', () => {
 const BK_URL_DEFAULT = 'https://framepoint-briefkasten.bluetacit.workers.dev';
 const bkOk = (u) => /^https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev$/i.test(u) || /^http:\/\/localhost:\d+$/.test(u);
 const bkLink = async (pid) => (pid ? DB.get('state', '__bk__' + pid).catch(() => null) : null);
+const standalone = () => !!navigator.standalone || matchMedia('(display-mode: standalone)').matches;
 async function bkSetup(key, url) {
   url = url && bkOk(url) ? url : BK_URL_DEFAULT;
+  // schon eingerichtet (z. B. jeder Start der Home-Bildschirm-App mit ?bk in der Adresse) → still, nur Angebote auffrischen
+  if ((await bkAlleLinks()).some((l) => l.key === key && l.url === url)) { log('bk-schon-eingerichtet', { standalone: standalone() }); bkAngeboteZeigen(); if (S.proj) bkRender(); return; }
   let r;
   try { r = await (await fetch(`${url}/v1/link?k=${encodeURIComponent(key)}`)).json(); }
   catch { toast('Briefkasten nicht erreichbar – Link später noch einmal öffnen', 5000); log('bk-setup-netz'); return; }
@@ -2331,6 +2353,8 @@ async function bkSetup(key, url) {
     <p>${neu ? 'Wenn du fertig bist, tippst du auf <b>„Senden“</b>: Dein Stand' : `Für <b>${esc(r.projekt)}</b> (${esc(r.name)}): Mit <b>„Senden“</b> geht dein Stand`} – Kommentare, Bewertungen und
     Sprachnotizen – ${neu ? 'geht ' : ''}direkt an Blue Tacit.</p>
     <p class="hint">Ohne Internet merkt sich die App den Stand und sendet ihn automatisch nach.</p>
+    ${!standalone() && /iPhone|iPad|Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1 ? `<p class="hint">📲 <b>Als App nutzen:</b> jetzt auf „Teilen“ ⬆︎ → „Zum Home-Bildschirm“.
+      Framepoint auf dem Home-Bildschirm ist dann schon eingerichtet – dort einfach öffnen und laden.</p>` : ''}
     <div class="row"><span class="grow"></span>${neu ? '<button id="bkLater">Später</button><button id="bkLoad" class="primary">Laden</button>' : '<button class="primary" onclick="closeModal()">OK</button>'}</div>`, (b) => {
     if (!neu) return;
     b.querySelector('#bkLater').onclick = () => { closeModal(); bkAngeboteZeigen(); };
@@ -2432,7 +2456,8 @@ $('btnSend').onclick = () => bkSend(false);
   // ?import=<Pfad>/ lädt einen Projektordner vom selben Server (Testserver am PC, ohne Dateiauswahl)
   const q = new URLSearchParams(location.search);
   const imp = q.get('import');
-  if (!imp && q.get('bk')) history.replaceState(null, '', location.pathname);
+  // ?bk bleibt in der Adresse: legt man die Seite in Safari „Zum Home-Bildschirm“, startet die App genau mit dieser Adresse
+  // (Manifest ohne start_url) und richtet sich in ihrem eigenen Speicher selbst ein (Robert 08.11.)
   bkRetry();
   if (imp && !/^[a-z]+:|^\/\//i.test(imp)) { // nur Ordner derselben Seite
     history.replaceState(null, '', location.pathname);
