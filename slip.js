@@ -170,59 +170,63 @@ document.addEventListener('keydown', (e) => {
 }, true);
 
 /* ---------- Vorschau: Proxy-Bild über der Version in geänderten Shots ----------
- * Am iPad gemessen (07.11.): Ein Sprung im LAUFENDEN Proxy zeigt kurz das richtige Bild und pausiert dann ~0,4 s zum
- * Nachladen; Tempowechsel lassen ihn ebenfalls stocken. Deshalb: Proxy im Stillstand auf den Startpunkt setzen und fertig
- * laden lassen, dann zeitgenau starten, wenn die Version dort ankommt (Startverzögerung wird gelernt). Im Shot keine
- * Sprünge und kein Tempo-Nachregeln – weicht er mehr als 1,5 Bild ab, wird er nur ausgeblendet (Versionsbild bleibt). */
-const VE = { cur: null, plan: null, bereit: false, laeuft: false, erstesBild: false, startLat: 0.12, aMeta: null, off: null };
-function pvHide() { pv.classList.add('hidden'); pv.style.opacity = 0; if (!pv.paused) pv.pause(); VE.cur = null; VE.plan = null; VE.laeuft = false; $('pvBadge').classList.toggle('hidden', !SL); }
+ * Am iPad (Chrome) vermessen 07.11.: Jedes Video stockt nach play() oder einem Sprung ~0,3–0,5 s und läuft danach exakt in
+ * Echtzeit; Tempowechsel lösen ebenfalls Stocken aus. Deshalb: Proxy ~2 s vor dem Shot starten (mit gelernter Vorhaltezeit),
+ * nach dem Stocken den Versatz im ruhigen Lauf messen, bei Bedarf EINMAL noch vor dem Shot neu ansetzen. Im Shot keine
+ * Eingriffe – sichtbar nur, wenn ≤ 1,5 Bild Versatz; sonst bleibt das Versionsbild. Die Vorhaltezeit gilt für alle Shots. */
+const VE = { cur: null, gestartet: 0, ruhigAb: 0, win: [], off: null, versuche: 0, vorhalt: 0.4, aMeta: null };
+function pvHide() { pv.classList.add('hidden'); pv.style.opacity = 0; if (!pv.paused) pv.pause(); VE.cur = null; VE.gestartet = 0; $('pvBadge').classList.toggle('hidden', !SL); }
 function changedShots() { return (S.vsegs || []).map((x) => x.shot).filter((sh, i, a) => a.indexOf(sh) === i && effZiel(sh) && footClipOf(sh)); }
 const veFps = () => S.ver.manifest.fps;
 const veSrcAt = (z, t) => z.srcIn / z.sh.src_fps + (t - z.sh.v_in / veFps()) + SLIP_LEAD;   // gewünschte Proxy-Zeit
 function veShow(on) { pv.style.opacity = on ? 1 : 0; $('pvBadge').classList.toggle('hidden', !on && !SL); }
-// Proxy im Stillstand auf den Punkt setzen, der bei Versionszeit startT zu sehen sein soll
-async function vePlan(startT) {
-  const z = VE.cur; if (!z) return;
-  const plan = { startT }; VE.plan = plan; VE.bereit = false; VE.laeuft = false;
-  if (!pv.paused) pv.pause();
-  await pvLoad(pv, footClipOf(z.sh));
-  if (VE.plan !== plan) return;
+function veStart(t) {
   pv.playbackRate = 1;
-  pv.currentTime = Math.max(0, veSrcAt(z, startT));
-  await new Promise((r) => { const fertig = () => { if (pv.readyState >= 3) r(); else pv.addEventListener('canplay', r, { once: true }); };
-    pv.addEventListener('seeked', fertig, { once: true }); setTimeout(r, 1500); });
-  if (VE.plan === plan) VE.bereit = true;
+  pv.currentTime = Math.max(0, veSrcAt(VE.cur, t + VE.vorhalt));   // um die Stockzeit vorausspringen
+  pv.play().catch(() => {});
+  VE.gestartet = performance.now(); VE.ruhigAb = VE.gestartet + 900; VE.win = []; VE.off = null;
+  veListen();
+}
+async function veVorbereiten(target) {
+  VE.cur = target; VE.gestartet = 0; VE.versuche = 0; VE.win = []; VE.off = null; veShow(false);
+  if (!pv.paused) pv.pause();
+  pv.muted = true; pv.classList.remove('hidden');
+  VE.laedt = true; await pvLoad(pv, footClipOf(target.sh)); VE.laedt = false;
 }
 function onMain(now, m) {
   if (veIds) veIds[0] = video.requestVideoFrameCallback(onMain);
-  if (!S.ver || !S.playing || (SL && !SL.ctx)) { if (VE.cur) { pv.pause(); VE.cur = null; VE.plan = null; VE.laeuft = false; if (!SL) pvHide(); } return; }
+  if (!S.ver || !S.playing || (SL && !SL.ctx)) { if (VE.cur) { pv.pause(); VE.cur = null; VE.gestartet = 0; if (!SL) pvHide(); } return; }
   VE.aMeta = { t: m.mediaTime, d: m.expectedDisplayTime };
   const t = m.mediaTime, fps = veFps();
   const list = SL && SL.ctx ? [SL.ctx] : changedShots().map((sh) => ({ sh, srcIn: effSrcIn(sh) }));
-  const target = list.find((z) => t >= z.sh.v_in / fps - 2.5 && t < z.sh.v_out / fps) || null;
+  const target = list.find((z) => t >= z.sh.v_in / fps - 2.6 && t < z.sh.v_out / fps) || null;
   if ((target && target.sh) !== (VE.cur && VE.cur.sh)) {
     if (VE.cur) pv.pause();
-    VE.cur = target; VE.plan = null; VE.laeuft = false; veShow(false);
-    if (target) { pv.muted = true; pv.classList.remove('hidden'); }
+    if (target) veVorbereiten(target); else { VE.cur = null; veShow(false); }
+    return;
   }
-  if (!VE.cur) return;
-  const sh = VE.cur.sh, vIn = sh.v_in / fps, vOut = sh.v_out / fps;
-  // Plan: Start am Shot-Anfang; ist der schon vorbei (z. B. Wiedergabe mitten im Shot), 0,5 s voraus
-  if (!VE.plan) vePlan(t < vIn - 0.6 ? vIn : t + 0.5);
-  else if (!VE.laeuft && VE.bereit && t >= VE.plan.startT - VE.startLat) {
-    pv.play().catch(() => {}); VE.laeuft = true; VE.erstesBild = true;
-  } else if (!VE.laeuft && !VE.bereit && t > VE.plan.startT) VE.plan = null;   // Planung zu spät fertig → neu planen
+  if (!VE.cur || VE.laedt) return;
+  const vIn = VE.cur.sh.v_in / fps, vOut = VE.cur.sh.v_out / fps;
+  if (!VE.gestartet && t >= vIn - 2.1) veStart(t);
   const inShot = t >= vIn - 0.5 / fps && t < vOut - 0.5 / fps;
-  veShow(inShot && VE.laeuft && VE.off !== null && Math.abs(VE.off) <= 1.5);
+  veShow(inShot && VE.off !== null && Math.abs(VE.off) <= 1.5);
 }
 function onPV(now, m) {
   if (veIds) veIds[1] = pv.requestVideoFrameCallback(onPV);
-  if (!VE.cur || !VE.aMeta || video.paused || !VE.laeuft) { VE.off = null; return; }
+  if (!VE.cur || !VE.aMeta || video.paused || !VE.gestartet) { VE.off = null; return; }
   const fps = veFps();
   const aT = VE.aMeta.t + (m.expectedDisplayTime - VE.aMeta.d) / 1000 * video.playbackRate;
-  VE.off = (m.mediaTime - veSrcAt(VE.cur, aT)) * fps;            // Versatz in Sequenzbildern (+ = Proxy voraus)
-  // Startverzögerung lernen: Proxy hinkt (off < 0) → beim nächsten Mal früher starten
-  if (VE.erstesBild) { VE.erstesBild = false; if (Math.abs(VE.off) < 15) VE.startLat = clamp(VE.startLat - VE.off / fps * 0.8, 0, 0.6); }
+  const off = (m.mediaTime - veSrcAt(VE.cur, aT)) * fps;         // Versatz in Sequenzbildern (+ = Proxy voraus)
+  if (performance.now() < VE.ruhigAb) { VE.off = null; return; } // Stocken nach dem Start abwarten
+  VE.win = VE.win.concat(off).slice(-4);
+  const mean = VE.win.reduce((x, y) => x + y, 0) / VE.win.length;
+  VE.off = VE.win.length >= 2 ? mean : null;
+  if (VE.win.length === 4 && Math.abs(mean) > 1.2) {
+    VE.vorhalt = clamp(VE.vorhalt - mean / fps, 0, 1.2);          // lernen: hinkt → mehr Vorhalt
+    const bisShot = VE.cur.sh.v_in / fps - aT;
+    if (bisShot > 0.95 && VE.versuche++ < 2) veStart(aT);         // nur vor dem Shot neu ansetzen (Stocken fällt in den Vorlauf)
+    else VE.win = [];
+  }
 }
 // Bild-Rückrufe gehen verloren, wenn ein Video eine neue Quelle bekommt (WebKit) → bei jedem Start frisch anmelden
 let veIds = null;
@@ -232,9 +236,8 @@ function veListen() {
 }
 veListen();
 video.addEventListener('play', veListen);
-pv.addEventListener('play', veListen);
-video.addEventListener('pause', () => { if (VE.cur) { pv.pause(); VE.plan = null; VE.laeuft = false; veShow(false); } });
-// Shot mit 2 s Vor- und 1 s Nachlauf spielen (im Slip-Modus mit dem Entwurf, sonst mit dem wirksamen Zielzustand)
+video.addEventListener('pause', () => { if (VE.cur) { pv.pause(); VE.gestartet = 0; veShow(false); } });
+// Shot mit 2,5 s Vor- und 1 s Nachlauf spielen (im Slip-Modus mit dem Entwurf, sonst mit dem wirksamen Zielzustand)
 let ctxStop = null;
 async function playContext(sh, srcIn) {
   const fps = S.ver.manifest.fps, c = S.clips[0], fc = footClipOf(sh);
@@ -243,7 +246,7 @@ async function playContext(sh, srcIn) {
   // Proxy vorladen, damit er beim Start schon bereit ist
   await pvLoad(pv, fc);
   if (pv.readyState < 1) await new Promise((r) => { pv.addEventListener('loadedmetadata', r, { once: true }); setTimeout(r, 3000); });
-  S.T = c.s + Math.max(0, sh.v_in / fps - 2); showFrame(true);   // 2 s Vorlauf: Proxy hat Zeit zum Einschwingen (wie Sync-Test)
+  S.T = c.s + Math.max(0, sh.v_in / fps - 2.5); showFrame(true);   // 2,5 s Vorlauf: Proxy schwingt vor dem Shot ein
   setTimeout(() => play(), 120);
   clearInterval(ctxStop);
   let lief = false;
