@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.0b';
+const APP_VERSION = 'v4.0c';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -830,7 +830,7 @@ function renderCurrent() {
   });
 }
 /* ---------- Shot-Bewertung (Edit-Tab) ----------
- * Jeder Shot der Version: ★ 1–3 oder Rot (= raus/ersetzen). Gilt für den sichtbaren Shot am Abspielzeiger.
+ * Jeder Shot der Version: ★ 1–3 oder Rot (= muss auf jeden Fall raus; reine Markierung, es wird nichts entfernt). Gilt für den sichtbaren Shot am Abspielzeiger.
  * Gespeichert je Version in ctx.bewertungen {Shot-ID: {wert, t}}; geht mit in die Speicherdatei. */
 const shotNow = () => (S.ver ? shotAt(S.T - S.clips[0].s) : null);
 function renderShotCard(box) {
@@ -843,8 +843,8 @@ function renderShotCard(box) {
     <div class="card-row"><span class="val">${clock(sh.v_in / fps, fps)} – ${clock(sh.v_out / fps, fps)} · ${durTxt((sh.v_out - sh.v_in) / fps)}</span></div>
     <div class="hint" style="margin:2px 0 4px">${sh.editierbar ? 'Änderbar (Inhalt verschieben / tauschen folgt)' : 'Gesperrt: ' + esc(sh.grund || '') + ' – kommentierbar'}</div>
     <div class="card-row stars">${[1, 2, 3].map((n) => `<button data-r="${n}" class="${w !== 'rot' && w >= n ? 'on' : ''}" title="${n} Stern${n > 1 ? 'e' : ''} (Taste ${n})">★</button>`).join('')}
-      <button data-r="rot" class="rot${w === 'rot' ? ' on' : ''}" title="Raus / ersetzen (Taste X)">✕ Rot</button></div>
-    <div class="hint">★ brauchbar · ★★ gut · ★★★ Favorit · Rot = raus/ersetzen. Ohne Bewertung = noch offen, keine Zustimmung.</div>`;
+      <button data-r="rot" class="rot${w === 'rot' ? ' on' : ''}" title="Muss auf jeden Fall raus (Taste X)">✕ Muss raus</button></div>
+    <div class="hint">★ brauchbar · ★★ gut · ★★★ Favorit · <b>Muss raus</b> = darf auf keinen Fall drin bleiben (wird nur markiert). Ohne Bewertung = noch offen.</div>`;
   box.querySelectorAll('[data-r]').forEach((x) => x.onclick = () => rateShot(x.dataset.r === 'rot' ? 'rot' : +x.dataset.r));
 }
 function rateShot(wert) {
@@ -1672,7 +1672,7 @@ function help() {
     <li><b>Spurname antippen</b> = Spur verschieben, falls die Kamera-Uhr falsch ging.</li>
     <li>Lücken ohne Aufnahme sind auf 2 s gekürzt (gestrichelt, mit echter Dauer).</li>
     <li><b>Lange auf die Timeline oder aufs Video drücken</b> = IN am Abspielzeiger, nochmal lange drücken = OUT. Beliebig viele Stellen pro Clip; alles außerhalb wird ausgegraut. Lange auf einen gelben Rand drücken = Lupe zum Feinjustieren.</li>
-    <li><b>Shortlist | Edit</b> oben: <b>Shortlist</b> = Footage sichten. <b>Edit</b> = eine Schnittversion dieses Drehs ansehen und kommentieren. Mit <b>Edit ▾</b> Versionen wählen oder importieren (im Ordner <i>Versionen</i> Video + gleichnamige .json auswählen). Jede Version hat eigene Kommentare, Cut-Takes, Position und Rückgängig. Die Spur zeigt die Shots der Version: blau = änderbar, schraffiert = gesperrt (kommentierbar). ⏮ ⏭ springen von Shot zu Shot. Rechts: Shot am Abspielzeiger mit <b>★ 1–3</b> oder <b>✕ Rot</b> (= raus/ersetzen) bewerten, Tasten 1–3 / X.</li>
+    <li><b>Shortlist | Edit</b> oben: <b>Shortlist</b> = Footage sichten. <b>Edit</b> = eine Schnittversion dieses Drehs ansehen und kommentieren. Mit <b>Edit ▾</b> Versionen wählen oder importieren (im Ordner <i>Versionen</i> Video + gleichnamige .json auswählen). Jede Version hat eigene Kommentare, Cut-Takes, Position und Rückgängig. Die Spur zeigt die Shots der Version: blau = änderbar, schraffiert = gesperrt (kommentierbar). ⏮ ⏭ springen von Shot zu Shot. Rechts: Shot am Abspielzeiger mit <b>★ 1–3</b> oder <b>✕ Muss raus</b> (rot, nur Markierung – es wird nichts entfernt) bewerten, Tasten 1–3 / X.</li>
     <li><b>Schnittversion prüfen</b> (Startseite): ein fertiges Video laden. <b>✂</b> in der Leiste öffnet den Cut-Takt: <b>▶</b> startet die Takt-Aufnahme nach 3-2-1, <b>✂</b> setzt Cuts (ohne Aufnahme: ein einzelner Cut am Abspielzeiger), rotes <b>■</b> stoppt. Jede Aufnahme ist ein Take (gelbe Striche); neuere Takes ersetzen ältere in ihrem Bereich. Take antippen → ✕ löscht. Am PC: B = Aufnahme, C = Cut, V = Stopp.</li>
     <li><b>▶★ Shortlist abspielen</b>: spielt nur deine In/Out-Stellen nacheinander; oben ★★★ zum Bewerten (Taste 1–3), ⏮ ⏭ = vorige/nächste Stelle, Play/Pause beendet.</li>
     <li><b>💬 Kommentar-Zeile</b> unter den Spuren antippen = Marker am Abspielzeiger + Sprachnotiz startet sofort (🎙 nochmal = Ende). Vorhandenen Kommentar antippen = auswählen. Bereich kommentieren: IN/OUT setzen + Notiz – bei Schnittversionen wird der Bereich dunkler.</li>
