@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.7b';
+const APP_VERSION = 'v4.8';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -205,13 +205,14 @@ async function bkAngeboteZeigen() {
   const box = $('bkAngebote'); if (!box) return;
   const lauf = ++angebotLauf;
   const links = await bkAlleLinks().catch(() => []);
-  const liste = await bkOffen().catch(() => []);
+  const [liste, roh] = await Promise.all([bkOffen().catch(() => []), bkRohOffen().catch(() => [])]);
   if (lauf !== angebotLauf || $('home').classList.contains('hidden')) return;
-  box.innerHTML = liste.map(angebotHtml).join('')
+  box.innerHTML = roh.map(rohHtml).join('') + liste.map(angebotHtml).join('')
     // Home-Bildschirm-App ohne Link (z. B. vorher ohne Link hinzugefügt): Link aus der Nachricht einfügen
     + (!links.length && standalone() ? `<div class="proj neu"><div class="info"><div class="name">🔗 Feedback-Link von Blue Tacit</div>
       <div class="meta">Link in der Nachricht lange drücken → „Kopieren“, dann hier tippen</div></div><button class="primary" id="bkPaste">Link einfügen</button></div>` : '');
   box.querySelectorAll('[data-laden]').forEach((b) => b.onclick = () => bkLaden(liste[+b.dataset.laden]));
+  box.querySelectorAll('[data-roh]').forEach((b) => b.onclick = () => bkRohLaden(roh[+b.dataset.roh].link));
   const pb = $('bkPaste'); if (pb) pb.onclick = bkLinkEinfuegen;
   if (liste.length) log('versionen-angeboten', { n: liste.length });
 }
@@ -270,7 +271,76 @@ async function bkLaden({ link, v }) {
   }
 }
 
-async function importFiles(fileList, dirHandle) {
+/* ---------- Rohmaterial zum Sichten direkt aus Roberts OneDrive (über den Briefkasten, Robert 10.11.) ----------
+ * Nur Links, die Robert mit --rohmaterial angelegt hat (Team, keine Kunden). Der Briefkasten liest den Projektordner per
+ * Microsoft Graph und reicht jede Datei durch. Danach läuft der normale Projekt-Import; schon geladene Dateien werden
+ * übersprungen → nach einem Abbruch einfach noch einmal „Laden“ (setzt fort). */
+async function projAufGeraet(pid) {
+  for (const p of await DB.all('projects')) if ((await projPid(p)) === pid) return p;
+  return null;
+}
+// Links mit Rohmaterial, deren Projekt auf diesem Gerät fehlt oder unvollständig ist: [{link, p}]
+async function bkRohOffen() {
+  const out = [];
+  for (const link of await bkAlleLinks()) {
+    let r;
+    try { r = await (await fetch(`${link.url}/v1/link?k=${encodeURIComponent(link.key)}`)).json(); } catch { continue; }
+    if (!r || !r.ok || !r.rohmaterial) continue;
+    const p = await projAufGeraet(link.project_id);
+    if (!p || p.missing) out.push({ link: { ...link, projekt: r.projekt || link.projekt }, p });
+  }
+  return out;
+}
+const rohHtml = ({ link, p }, i) => `<div class="proj neu"><div class="info"><div class="name">🎞 ${esc(link.projekt)}</div>
+  <div class="meta">${p ? `Footage unvollständig · ${p.missing} Dateien fehlen noch` : 'Footage zum Sichten · kommt direkt aus OneDrive'}</div></div>
+  <button class="primary" data-roh="${i}">${p ? 'Fortsetzen' : 'Laden'}</button></div>`;
+// Eine Datei vom Briefkasten holen (3 Versuche), Fortschritt in MB an fortschritt(n)
+async function bkRohDatei(link, name, fortschritt) {
+  let fehler;
+  for (let versuch = 0; versuch < 3; versuch++) {
+    try {
+      const r = await fetch(`${link.url}/v1/projekt/datei?k=${encodeURIComponent(link.key)}&n=${encodeURIComponent(name)}`, { cache: 'no-store' });
+      if (!r.ok || !r.body) throw new Error((await r.json().catch(() => ({}))).fehler || `HTTP ${r.status}`);
+      const soll = +r.headers.get('content-length') || 0, rd = r.body.getReader(), teile = [];
+      let n = 0;
+      for (;;) { const { done, value } = await rd.read(); if (done) break; teile.push(value); n += value.length; fortschritt(n); }
+      if (soll && n !== soll) throw new Error(`unvollständig (${n} von ${soll} Bytes)`);
+      return new Blob(teile);
+    } catch (e) { fehler = e; log('roh-datei-fehler', { name, versuch, msg: String(e && e.message || e) }); await new Promise((ok) => setTimeout(ok, 1500 * (versuch + 1))); }
+  }
+  throw new Error(`${name}: ${fehler && fehler.message || fehler}`);
+}
+async function bkRohLaden(link) {
+  log('roh-laden-start', { projekt: link.projekt });
+  modal(`<h2>${esc(link.projekt)}</h2><p class="hint">Dateiliste wird geholt …</p>`);
+  try {
+    const r = await (await fetch(`${link.url}/v1/projekt/dateien?k=${encodeURIComponent(link.key)}`, { cache: 'no-store' })).json().catch(() => null);
+    if (!r || !r.ok) throw new Error(r && r.fehler === 'kein_rohmaterial' ? 'Für diesen Link ist kein Footage freigegeben' : (r && r.fehler) || 'Briefkasten nicht erreichbar');
+    let gesamt = 0;
+    const groesse = new Map(r.dateien.map((f) => [f.name, f.bytes]));
+    // „Dateien“ für importFiles: holen erst, wenn der Import sie braucht (und nur, wenn sie noch fehlen)
+    const dateien = r.dateien.map((f) => ({
+      name: f.name, size: f.bytes, fern: true,
+      async arrayBuffer() {
+        const blob = await bkRohDatei(link, f.name, (n) => {
+          const t = $('impTxt'); if (t) t.textContent = `${f.name} · ${(n / 1e6).toFixed(1)} / ${(f.bytes / 1e6).toFixed(1)} MB · gesamt ${((gesamt + n) / 1e9).toFixed(2)} GB`;
+        });
+        gesamt += f.bytes;
+        return blob.arrayBuffer();
+      },
+      async text() { return new TextDecoder().decode(await this.arrayBuffer()); },
+    }));
+    log('roh-liste', { dateien: dateien.length, gb: +(r.bytes / 1e9).toFixed(2) });
+    await importFiles(dateien, null, { fern: true, groesse });
+    log('roh-laden-fertig', { projekt: link.projekt });
+  } catch (e) {
+    log('roh-laden-fehler', { msg: String(e && e.message || e) });
+    modal(`<h2>Laden unterbrochen</h2><p>${esc(e && e.message || e)}</p><p class="hint">Schon geladene Dateien bleiben auf dem Gerät. Tippe auf der Startseite noch einmal auf „Fortsetzen“.</p>
+      <div class="row"><span class="grow"></span><button class="primary" onclick="closeModal();showHome()">OK</button></div>`);
+  }
+}
+
+async function importFiles(fileList, dirHandle, opt = {}) {
   const files = [...fileList];
   const jsons = files.filter((f) => f.name.toLowerCase().endsWith('.json'));
   const pj = jsons.find((f) => /projekt/i.test(f.name)) || jsons[0];
@@ -305,13 +375,13 @@ async function importFiles(fileList, dirHandle) {
   const needed = meta.clips.flatMap((c) => [c.file, c.sprite]);
   const have = new Set(await DB.keys('files'));
   modal(`<h2>Importiere ${esc(meta.name)}</h2><div class="progress"><div id="impBar"></div></div><p id="impTxt" class="hint"></p>`);
-  let done = 0, bytes = 0;
+  let done = 0, bytes = 0, abbruch = null;
   DB.gross++;
   try {
   for (const name of needed) {
     const f = byName.get(name);
     const key = id + '/' + name;
-    if (f) {
+    if (f && !(opt.fern && have.has(key))) { // aus OneDrive: schon geladene Dateien überspringen (= Fortsetzen)
       // Inhalt kopieren statt File-Referenz speichern (iOS löscht die Picker-Kopie später)
       const blob = new Blob([await f.arrayBuffer()], { type: name.endsWith('.jpg') ? 'image/jpeg' : 'video/mp4' });
       await DB.put('files', blob, key);
@@ -322,12 +392,13 @@ async function importFiles(fileList, dirHandle) {
     $('impBar').style.width = (100 * done / needed.length) + '%';
     $('impTxt').textContent = `${done} / ${needed.length} · ${name}`;
   }
-  } finally { DB.gross--; }
+  } catch (e) { if (!opt.fern) throw e; abbruch = e; } finally { DB.gross--; }
   const missing = needed.filter((n) => !have.has(id + '/' + n)).length;
   const old = await DB.get('projects', id);
   const project_id = (old && old.project_id) || (old ? await projectIdOf(old.meta) : pid); // einmal vergeben, bleibt fest
   await DB.put('projects', { id, project_id, meta, bytes: (old ? old.bytes : 0) + bytes, missing, opened: Date.now() });
   if (dirHandle) await DB.put('state', dirHandle, '__dir__' + id);
+  if (abbruch) throw abbruch; // Projekt ist angelegt (mit fehlenden Dateien) → Startseite bietet „Fortsetzen“
   closeModal();
   toast(missing ? `Importiert – ${missing} Dateien fehlen noch` : 'Projekt importiert');
   showHome();
@@ -2355,7 +2426,19 @@ async function bkSetup(key, url) {
   catch { toast('Briefkasten nicht erreichbar – Link später noch einmal öffnen', 5000); log('bk-setup-netz'); return; }
   if (!r.ok) { toast('Dieser Senden-Link ist ungültig oder gesperrt', 5000); log('bk-setup-abgelehnt'); return; }
   await DB.put('state', { key, url, name: r.name, projekt: r.projekt, project_id: r.project_id, eingerichtet: Date.now() }, '__bk__' + r.project_id);
-  log('bk-eingerichtet', { projekt: r.projekt, name: r.name });
+  log('bk-eingerichtet', { projekt: r.projekt, name: r.name, rohmaterial: !!r.rohmaterial });
+  const vorhanden = r.rohmaterial ? await projAufGeraet(r.project_id) : null;
+  if (r.rohmaterial && (!vorhanden || vorhanden.missing)) {
+    const link = { key, url, name: r.name, projekt: r.projekt, project_id: r.project_id };
+    modal(`<h2>Footage bereit</h2><p><b>${esc(r.projekt)}</b> liegt zum Sichten bereit. Tippe auf <b>„Laden“</b> – das Footage kommt direkt in Framepoint, ohne Dateiauswahl.</p>
+      <p class="hint">Bitte die App offen lassen und das Gerät am WLAN lassen. Bricht es ab, setzt „Fortsetzen“ auf der Startseite dort fort.</p>
+      <p>Wenn du fertig bist, tippst du auf <b>„Senden“</b>: deine Auswahl geht direkt an Blue Tacit.</p>
+      <div class="row"><span class="grow"></span><button id="bkLater">Später</button><button id="bkLoad" class="primary">Laden</button></div>`, (b) => {
+      b.querySelector('#bkLater').onclick = () => { closeModal(); bkAngeboteZeigen(); };
+      b.querySelector('#bkLoad').onclick = () => bkRohLaden(link);
+    });
+    return;
+  }
   const offen = await bkOffen(r.project_id).catch(() => []);
   const neu = offen[offen.length - 1];
   modal(`<h2>${neu ? 'Dein Video ist bereit' : 'Senden eingerichtet'}</h2>
