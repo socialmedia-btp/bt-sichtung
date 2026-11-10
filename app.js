@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.8';
+const APP_VERSION = 'v4.9';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -798,7 +798,7 @@ function stopPlay() {
   S.switching = false; video.pause(); save();
   log('stop', vstate());
   if (CUT.rec) setTimeout(stopCutRec, 0);
-  if (reel && !reel.stepping) { const r = reel; reel = null; document.body.classList.remove('reel'); updateReelBar(); log('shortlist-stopp', { bei: r.i + 1 }); }
+  // Shortlist-Sequenz bleibt beim Anhalten offen (eigene Ansicht mit eigenem Abspielkopf, Robert 10.11.) – schließen nur mit ✕
 }
 function resumeAfterSwitch() {
   clearTimeout(S.switchTimer); video.removeEventListener('seeked', resumeAfterSwitch);
@@ -838,7 +838,10 @@ function playTick() {
     if (video.currentTime > 0.05) S.stuck = 0;
     if (reel && !reel.stepping) {
       const s = reel.list[reel.i];
-      if (s && S.T >= selRange(s)[1] - 0.02) { reel.i++; reelStep(); return; }
+      if (s && S.T >= selRange(s)[1] - 0.02) {
+        if (reel.i + 1 < reel.list.length) { reelGo(reel.i + 1, 0, true); return; }
+        stopPlay(); S.T = selRange(s)[1] - 0.04; showFrame(true); toast('Ende der Shortlist'); return;
+      }
     }
     updateHud(shownClip());
   }
@@ -1133,30 +1136,43 @@ function rateShot(wert) {
 }
 const RATE_COL = { 1: '#f2c14e', 2: '#f2c14e', 3: '#f2c14e', rot: '#ff453a' };
 
-/* ---------- Shortlist abspielen ----------
- * Nur die In/Out-Stellen chronologisch hintereinander – zum Bewerten mit Sternen. */
+/* ---------- Shortlist-Sequenz ----------
+ * Eigene Ansicht wie ein neues Projekt: nur die fertigen IN/OUT-Bereiche lückenlos hintereinander (chronologisch, Filter ★),
+ * eigene Zeitleiste mit eigenem Abspielkopf zum Durchziehen (sequenz.js). Abspielen läuft nahtlos von Bereich zu Bereich;
+ * Sterne, Notizen und Kommentare gehören weiter zu den Bereichen. Intern bleibt S.T die echte Footage-Zeit. */
 let reel = null;
+function reelListe(min) {
+  return sels().filter((s) => s.kind === 'range' && !s.open && (s.stars || 0) >= (min || 0)).sort((a, b) => selRange(a)[0] - selRange(b)[0]);
+}
 function playShortlist() {
-  const list = sels().filter((s) => s.kind === 'range' && !s.open).sort((a, b) => selRange(a)[0] - selRange(b)[0]);
+  const list = reelListe(0);
   if (!list.length) { toast('Noch keine fertige Auswahl (IN + OUT)'); return; }
   let i = list.indexOf(S.curSel); if (i < 0) i = 0;
-  reel = { list, i }; log('shortlist-start', { n: list.length, ab: i + 1 });
-  document.body.classList.add('reel'); reelStep();
+  reel = { list, i, min: 0 }; log('shortlist-start', { n: list.length, ab: i + 1 });
+  document.body.classList.add('reel');
+  reelGo(i, 0, false);
+  if (typeof seqOeffnen === 'function') seqOeffnen();
 }
-function reelStep() {
+// zu Bereich i an Position local (s im Bereich); weiter abspielen, wenn gewünscht
+function reelGo(i, local, weiter) {
   if (!reel) return;
-  const s = reel.list[reel.i];
-  if (!s) { endReel(); toast('Shortlist durch'); return; }
+  const s = reel.list[i];
+  if (!s) { stopPlay(); toast('Ende der Shortlist'); return; }
+  reel.i = i;
   reel.stepping = true; jumpTo(s); reel.stepping = false;
-  updateReelBar(); lastToggle = 0; play();
+  if (local > 0) { S.T = selRange(s)[0] + local; showFrame(true); }
+  updateReelBar(); renderSide(); requestDraw();
+  if (weiter) { lastToggle = 0; play(); }
 }
-function reelMove(d) { if (!reel) return false; reel.i = clamp(reel.i + d, 0, reel.list.length); reelStep(); return true; }
-function endReel() { if (!reel) return; log('shortlist-ende', { bei: reel.i + 1 }); reel = null; document.body.classList.remove('reel'); stopPlay(); updateReelBar(); }
+function reelStep() { if (reel) reelGo(reel.i, 0, true); }
+function reelMove(d) { if (!reel) return false; reelGo(clamp(reel.i + d, 0, reel.list.length - 1), 0, S.playing); return true; }
+function endReel() { if (!reel) return; log('shortlist-ende', { bei: reel.i + 1 }); reel = null; document.body.classList.remove('reel'); stopPlay(); updateReelBar(); const sw = $('seqWrap'); if (sw) sw.classList.add('hidden'); resizeCanvas(); }
 function updateReelBar() {
   const el = $('reelBar'); if (!el) return;
   if (!reel) { el.classList.add('hidden'); return; }
   const s = reel.list[reel.i]; el.classList.remove('hidden');
   el.querySelector('.reel-pos').textContent = `${reel.i + 1}/${reel.list.length}`;
+  if (typeof seqZeichnen === 'function') seqZeichnen();
   el.querySelectorAll('[data-star]').forEach((b) => b.classList.toggle('on', !!s && s.stars >= +b.dataset.star));
 }
 function setStars(n) {

@@ -12,7 +12,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="icon" href="icon-192.png">
-<link rel="stylesheet" href="styles.css?v=4.8">
+<link rel="stylesheet" href="styles.css?v=4.9">
 </head>
 <body>
 
@@ -162,6 +162,13 @@
       <button id="slipOk" class="primary">Übernehmen</button>
     </div>
   </div>
+  <!-- Shortlist-Sequenz: nur die IN/OUT-Bereiche hintereinander, eigener Abspielkopf (sequenz.js) -->
+  <div id="seqWrap" class="seq-wrap hidden">
+    <div class="seq-head"><b>Shortlist-Sequenz</b><span id="seqInfo" class="muted"></span><span class="grow"></span>
+      <span id="seqFilter" class="seq-filter"><button data-min="0">Alle</button><button data-min="1">★</button><button data-min="2">★★</button><button data-min="3">★★★</button></span>
+      <button id="seqZu" class="ghost" title="Sequenz schließen (R)">✕ Schließen</button></div>
+    <canvas id="seqCv"></canvas>
+  </div>
   <div class="tl-wrap">
     <canvas id="tl"></canvas>
     <div id="loupe" class="loupe hidden"></div>
@@ -172,8 +179,9 @@
 <div id="modal" class="modal hidden"><div class="modal-box" id="modalBox"></div></div>
 <div id="toast" class="toast hidden"></div>
 
-<script src="vertrag.js?v=4.8"></script>
-<script src="app.js?v=4.8"></script>
-<script src="slip.js?v=4.8"></script>
+<script src="vertrag.js?v=4.9"></script>
+<script src="app.js?v=4.9"></script>
+<script src="slip.js?v=4.9"></script>
+<script src="sequenz.js?v=4.9"></script>
 </body>
 </html>

@@ -269,3 +269,15 @@ body.slip .fs-mini, body.slip .cutbar { display: none !important; }
 /* Neue Version zum Laden (Briefkasten) */
 .proj.neu { border: 1.5px solid #0078FF; background: #0078ff14; }
 #verLaden .proj { margin: 8px 0; }
+/* Shortlist-Sequenz (eigene Ansicht statt der Footage-Zeitleiste) */
+.seq-wrap { position: relative; height: 290px; flex: none; background: var(--bg); border-top: 2px solid var(--sel); padding-bottom: var(--safe-b);
+  display: flex; flex-direction: column; }
+.seq-head { display: flex; align-items: center; gap: 12px; padding: 8px 12px; flex-wrap: wrap; }
+.seq-head .muted { font: 600 13px ui-monospace, Menlo, Consolas, monospace; }
+.seq-filter { display: flex; gap: 4px; }
+.seq-filter button { min-height: 36px; padding: 4px 12px; border-radius: 8px; color: var(--sel); }
+.seq-filter button.on { background: var(--sel); color: #1a1400; }
+#seqCv { flex: 1; width: 100%; min-height: 0; display: block; touch-action: none; }
+body.reel .tl-wrap { display: none; }
+body.reel .reel-bar .reel-end { display: none; }
+@media (max-width: 760px) { .seq-wrap { height: 240px; } }
