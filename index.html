@@ -12,7 +12,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="icon" href="icon-192.png">
-<link rel="stylesheet" href="styles.css?v=4.9d">
+<link rel="stylesheet" href="styles.css?v=4.9e">
 </head>
 <body>
 
@@ -91,6 +91,12 @@
         <pre id="liveLog" class="live-log hidden"></pre>
         <div id="countdown" class="countdown hidden"></div>
       </div>
+      <!-- Shortlist abspielen: Position + Sterne – unter dem Bild (v4.9e), im Vollbild schwebend oben -->
+      <div id="reelBar" class="reel-bar hidden">
+        <span class="reel-pos"></span>
+        <button data-star="1">★</button><button data-star="2">★</button><button data-star="3">★</button>
+        <button data-act="reel" class="reel-end" title="Beenden">✕</button>
+      </div>
       <div class="transport">
         <button data-act="prevClip" title="Vorheriger Clip">⏮</button>
         <button data-act="back1s" title="−1 s">−1s</button>
@@ -121,12 +127,6 @@
     </aside>
   </div>
 
-  <!-- Shortlist abspielen: Position + Sterne, auch im Vollbild -->
-  <div id="reelBar" class="reel-bar hidden">
-    <span class="reel-pos"></span>
-    <button data-star="1">★</button><button data-star="2">★</button><button data-star="3">★</button>
-    <button data-act="reel" class="reel-end" title="Beenden">✕</button>
-  </div>
 
   <!-- Vollbild: schwebende Knöpfe -->
   <div class="fs-top">
@@ -179,9 +179,9 @@
 <div id="modal" class="modal hidden"><div class="modal-box" id="modalBox"></div></div>
 <div id="toast" class="toast hidden"></div>
 
-<script src="vertrag.js?v=4.9d"></script>
-<script src="app.js?v=4.9d"></script>
-<script src="slip.js?v=4.9d"></script>
-<script src="sequenz.js?v=4.9d"></script>
+<script src="vertrag.js?v=4.9e"></script>
+<script src="app.js?v=4.9e"></script>
+<script src="slip.js?v=4.9e"></script>
+<script src="sequenz.js?v=4.9e"></script>
 </body>
 </html>

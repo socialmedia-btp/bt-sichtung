@@ -215,9 +215,11 @@ body.fs .cutbar { bottom: 320px; }
 /* ---------- Shortlist abspielen ---------- */
 .list-head { align-items: center; gap: 8px; }
 .list-head .mini { min-height: 34px; padding: 4px 10px; font-size: 13px; background: var(--sel); color: #1a1400; font-weight: 600; }
-.reel-bar { position: fixed; top: calc(64px + var(--safe-t)); left: 50%; transform: translateX(-50%); z-index: 8; display: flex; align-items: center; gap: 6px;
-  background: var(--glass); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); padding: 6px 10px; border-radius: 28px; }
-body.fs .reel-bar { top: max(12px, var(--safe-t)); }
+/* v4.9e: Sterne-Leiste als eigene Zeile unter dem Bild (Robert 11.11.: nicht mittig über dem Bild); im Vollbild weiter schwebend oben */
+.reel-bar { position: relative; flex: none; display: flex; align-items: center; justify-content: center; gap: 6px;
+  background: var(--panel); padding: 2px 10px; border-top: 0.5px solid var(--line); }
+body.fs .reel-bar { position: fixed; top: max(12px, var(--safe-t)); left: 50%; transform: translateX(-50%); z-index: 8;
+  background: var(--glass); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); padding: 6px 10px; border-radius: 28px; border-top: none; }
 .reel-pos { font: 700 14px ui-monospace, Menlo, Consolas, monospace; padding: 0 8px; }
 .reel-bar [data-star] { background: transparent; font-size: 30px; min-width: 48px; min-height: 48px; color: #5a5a60; }
 .reel-bar [data-star].on { color: var(--sel); }
@@ -297,6 +299,17 @@ body.slip .fs-mini, body.slip .cutbar { display: none !important; }
 body.reel .tl-wrap { display: none; }
 body.reel .reel-bar .reel-end { display: none; }
 @media (max-width: 760px) { .seq-wrap { height: 240px; } }
+/* v4.9e: Shortlist hochkant ohne Vollbild – Clip-Infos (IN/OUT/Länge) und Zeitcode-Zeile ausblenden, damit das Bild größer wird */
+@media (max-width: 900px), (orientation: portrait) {
+  body.reel:not(.fs) .side, body.reel:not(.fs) .tc { display: none; }
+  body.reel:not(.fs) .reel-bar [data-star] { font-size: 26px; min-width: 44px; min-height: 42px; }
+}
+@media (max-width: 600px) {
+  .seq-head { gap: 6px; padding: 6px 10px; }
+  .seq-head > b { display: none; }   /* Titel weg, damit Info + Filter + Schließen in eine Zeile passen */
+  .seq-head .muted { font-size: 12px; }
+  .seq-filter button { padding: 4px 9px; }
+}
 /* Vollbild (iPad): Sequenz-Zeitleiste unten festmachen wie die normale Zeitleiste (Robert 11.11.: lag oben) */
 body.fs .seq-wrap { position: fixed; left: 0; right: 0; bottom: 0; height: 270px; z-index: 5; border-top: none;
   padding-left: var(--safe-l); padding-right: var(--safe-r);

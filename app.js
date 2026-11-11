@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9d';
+const APP_VERSION = 'v4.9e';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -2009,6 +2009,8 @@ async function loadSelection(d) {
 function help() {
   modal(`<h2>So geht’s</h2><ul>
     <li><b>Timeline wischen</b> = spulen (Playhead bleibt in der Mitte). <b>Zwei Finger auseinander</b> = zoomen. Am PC: Mausrad spult, Strg+Mausrad zoomt.</li>
+    <li><b>Shortlist-Sequenz (▶★):</b> antippen = dorthin springen. <b>Zwei Finger auseinander</b> = ranzoomen; dann wischen = spulen
+      (Abspielkopf bleibt in der Mitte), zwei Finger zusammen = wieder alles sehen. Am PC: Strg+Mausrad zoomt.</li>
     <li><b>Spur antippen</b> = diese Kamera im Bild zeigen. Gleichzeitige Aufnahmen liegen übereinander.</li>
     <li><b>IN</b> / <b>OUT</b> setzen die Auswahl am Playhead (Tasten I / O). OUT schließt das aktuelle Bild ein.</li>
     <li><b>Gelben Rand ziehen</b> = In/Out verschieben. <b>Lange draufhalten</b> = Lupe: jede Fingerbewegung = 1 Bild.</li>

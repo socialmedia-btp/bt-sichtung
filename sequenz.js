@@ -5,7 +5,16 @@
  * Die Sequenz ist eine Sicht auf die Shortlist – Sterne/Notizen/Kommentare gehören weiter zu den Bereichen. */
 'use strict';
 const seqCv = $('seqCv'), seqCtx = seqCv.getContext('2d');
-const SEQ = { pad: 14, lineal: 22, drag: null };
+const SEQ = { pad: 14, lineal: 22, drag: null, zoom: 1, ptr: new Map(), pinch: null };
+// v4.9e Zoom (Robert 11.11.: „mit zwei Fingern ranzoomen, um präziser durch die Shortlist zu wandern“):
+// zoom 1 = ganze Sequenz passt in die Breite (wie bisher: antippen/ziehen = Stelle). zoom > 1 = Abspielkopf bleibt mittig,
+// Wischen spult (wie die Footage-Zeitleiste), kurzes Antippen springt an die getippte Stelle. Zwei Finger / Strg+Mausrad = zoomen.
+function seqAnsicht(w, gesamt) {
+  const breit = w - 2 * SEQ.pad, pps = breit / Math.max(gesamt, 0.1) * SEQ.zoom;
+  const sicht = breit / pps;
+  const v0 = SEQ.zoom <= 1 ? 0 : clamp(seqZeit() - sicht / 2, 0, Math.max(0, gesamt - sicht));
+  return { pps, v0, x: (t) => SEQ.pad + (t - v0) * pps, t: (px) => v0 + (px - SEQ.pad) / pps };
+}
 
 // Bereiche der Sequenz mit Start (Sequenzzeit) und Länge
 function seqTeile() {
@@ -39,18 +48,21 @@ function seqZeichnen() {
   wrap.classList.remove('hidden');
   const dpr = window.devicePixelRatio || 1, w = seqCv.width / dpr, h = seqCv.height / dpr, g = seqCtx;
   const { teile, gesamt } = seqTeile();
-  const pps = (w - 2 * SEQ.pad) / Math.max(gesamt, 0.1), x = (t) => SEQ.pad + t * pps;
+  const { pps, v0, x } = seqAnsicht(w, gesamt);
   const y0 = SEQ.lineal + 8, bh = h - y0 - 14;
   g.clearRect(0, 0, w, h);
-  // Lineal in Sequenzzeit
+  // Lineal in Sequenzzeit (nur sichtbarer Bereich)
   g.fillStyle = '#8e8e93'; g.font = '600 11px -apple-system, Segoe UI, sans-serif'; g.textBaseline = 'middle';
-  const schritt = [1, 2, 5, 10, 15, 30, 60, 120, 300].find((s) => s * pps >= 70) || 600;
-  for (let t = 0; t <= gesamt + 0.001; t += schritt) {
-    g.fillRect(x(t), SEQ.lineal - 6, 1, 6); g.fillText(seqFmt(t), x(t) + 4, SEQ.lineal - 12);
+  const schritt = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300].find((s) => s * pps >= 70) || 600;
+  const tBis = v0 + (w - SEQ.pad) / pps;
+  for (let t = Math.floor(v0 / schritt) * schritt; t <= Math.min(gesamt, tBis) + 0.001; t += schritt) {
+    if (x(t) < 0) continue;
+    g.fillRect(x(t), SEQ.lineal - 6, 1, 6); g.fillText(schritt < 1 ? `${seqFmt(t)}.${Math.round((t % 1) * 10)}` : seqFmt(t), x(t) + 4, SEQ.lineal - 12);
   }
   // Bereiche als Blöcke mit Filmstreifen, Farbe der Kamera, Name + Sterne
   teile.forEach((p, i) => {
     const bx = x(p.t0), bw = Math.max(2, p.d * pps - 2);
+    if (bx > w || bx + bw < 0) return;   // außerhalb der Ansicht
     const c = S.byId.get(p.s.clipId), tr = S.tracks.findIndex((t) => t.id === p.s.track);
     const farbe = (S.tracks[tr] && S.tracks[tr].color) || TRACK_COLORS[0];
     g.save(); g.beginPath(); g.rect(bx, y0, bw, bh); g.clip();
@@ -59,7 +71,7 @@ function seqZeichnen() {
     const img = c && S.sprites.get(c.id);
     if (img && img.complete && img.naturalWidth && c.spriteN) {
       const th = bh, tw = th * 16 / 9;
-      for (let xx = bx; xx < bx + bw; xx += tw) {
+      for (let xx = bx + Math.max(0, Math.floor((-tw - bx) / tw)) * tw; xx < Math.min(bx + bw, w + tw); xx += tw) {
         const tq = p.s.inT + ((xx + tw / 2 - bx) / pps), idx = clamp(Math.floor(tq / c.spriteStep), 0, c.spriteN - 1);
         g.drawImage(img, idx * 160, 0, 160, 90, xx, y0, tw, th);
       }
@@ -80,7 +92,7 @@ function seqZeichnen() {
   const px = x(seqZeit());
   g.fillStyle = '#ff453a'; g.fillRect(px - 1, SEQ.lineal - 4, 2, h - SEQ.lineal - 6);
   g.beginPath(); g.moveTo(px - 7, SEQ.lineal - 6); g.lineTo(px + 7, SEQ.lineal - 6); g.lineTo(px, SEQ.lineal + 3); g.fill();
-  $('seqInfo').textContent = `${reel.i + 1}/${teile.length} · ${seqFmt(seqZeit())} / ${seqFmt(gesamt)}`;
+  $('seqInfo').textContent = `${reel.i + 1}/${teile.length} · ${seqFmt(seqZeit())} / ${seqFmt(gesamt)}` + (SEQ.zoom > 1.05 ? ` · ${SEQ.zoom.toFixed(1)}×` : '');
 }
 
 // Sequenzzeit → Bereich + Position; beim Ziehen schnelles Bild, beim Loslassen genaues
@@ -93,25 +105,64 @@ function seqSpringe(t, genau) {
   S.T = p.a + (t - p.t0);
   showFrame(!!genau); updateReelBar(); seqZeichnen();
 }
-const seqT = (e) => { const r = seqCv.getBoundingClientRect(), { gesamt } = seqTeile(); return (e.clientX - r.left - SEQ.pad) / ((r.width - 2 * SEQ.pad) / Math.max(gesamt, 0.1)); };
+// Bildschirm-x → Sequenzzeit in der aktuellen Ansicht (Zoom berücksichtigt)
+const seqT = (e) => { const r = seqCv.getBoundingClientRect(), { gesamt } = seqTeile(); return seqAnsicht(r.width, gesamt).t(e.clientX - r.left); };
+const seqAbstand = () => { const [a, b] = [...SEQ.ptr.values()]; return Math.hypot(a.x - b.x, a.y - b.y) || 1; };
 seqCv.addEventListener('pointerdown', (e) => {
   if (!reel) return;
   try { seqCv.setPointerCapture(e.pointerId); } catch { /* egal */ }
-  SEQ.drag = { warSpielend: S.playing, letzt: 0 };
-  stopPlay(); seqSpringe(seqT(e), false);
+  SEQ.ptr.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (SEQ.ptr.size === 2) {                                   // zweiter Finger: Ziehen abbrechen, Zoom beginnt
+    SEQ.pinch = { d0: seqAbstand(), z0: SEQ.zoom, warSpielend: SEQ.drag ? SEQ.drag.warSpielend : false };
+    if (SEQ.drag && SEQ.drag.t0 != null) seqSpringe(SEQ.drag.t0, false);   // Sprung durch den ersten Finger zurücknehmen
+    SEQ.drag = null; return;
+  }
+  if (SEQ.ptr.size > 2) return;
+  const t0 = seqZeit();
+  SEQ.drag = { warSpielend: S.playing, letzt: 0, x0: e.clientX, t0, bewegt: false };
+  stopPlay();
+  if (SEQ.zoom <= 1) seqSpringe(seqT(e), false);             // ganze Sequenz: Finger = Stelle (wie bisher)
 });
 seqCv.addEventListener('pointermove', (e) => {
-  if (!reel || !SEQ.drag) return;
+  if (!reel || !SEQ.ptr.has(e.pointerId)) return;
+  SEQ.ptr.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (SEQ.pinch && SEQ.ptr.size === 2) {
+    SEQ.zoom = clamp(SEQ.pinch.z0 * seqAbstand() / SEQ.pinch.d0, 1, 80);
+    seqZeichnen(); return;
+  }
+  if (!SEQ.drag) return;
+  if (Math.abs(e.clientX - SEQ.drag.x0) > 6) SEQ.drag.bewegt = true;
   const jetzt = performance.now(); if (jetzt - SEQ.drag.letzt < 40) return;   // ~25 Bilder/s beim Durchziehen
-  SEQ.drag.letzt = jetzt; seqSpringe(seqT(e), false);
+  SEQ.drag.letzt = jetzt;
+  if (SEQ.zoom <= 1) { seqSpringe(seqT(e), false); return; }
+  if (!SEQ.drag.bewegt) return;
+  const r = seqCv.getBoundingClientRect(), { pps } = seqAnsicht(r.width, seqTeile().gesamt);
+  seqSpringe(SEQ.drag.t0 - (e.clientX - SEQ.drag.x0) / pps, false);   // Wischen spult, Kopf bleibt mittig
 });
 const seqLos = (e) => {
-  if (!reel || !SEQ.drag) return;
-  const weiter = SEQ.drag.warSpielend; SEQ.drag = null;
-  seqSpringe(seqT(e), true); log('sequenz-gezogen', { bereich: reel.i + 1, t: +seqZeit().toFixed(2) });
-  if (weiter) { lastToggle = 0; play(); }
+  SEQ.ptr.delete(e.pointerId);
+  if (!reel) return;
+  if (SEQ.pinch) {
+    if (SEQ.ptr.size === 0) { log('sequenz-zoom', { zoom: +SEQ.zoom.toFixed(2) }); const w = SEQ.pinch.warSpielend; SEQ.pinch = null; seqSpringe(seqZeit(), true); if (w) { lastToggle = 0; play(); } }
+    return;
+  }
+  if (!SEQ.drag) return;
+  const d = SEQ.drag; SEQ.drag = null;
+  if (SEQ.zoom <= 1 || !d.bewegt) seqSpringe(seqT(e), true);   // Antippen = an die Stelle springen
+  else { const r = seqCv.getBoundingClientRect(), { pps } = seqAnsicht(r.width, seqTeile().gesamt); seqSpringe(d.t0 - (e.clientX - d.x0) / pps, true); }
+  log('sequenz-gezogen', { bereich: reel.i + 1, t: +seqZeit().toFixed(2), zoom: +SEQ.zoom.toFixed(2) });
+  if (d.warSpielend) { lastToggle = 0; play(); }
 };
 seqCv.addEventListener('pointerup', seqLos); seqCv.addEventListener('pointercancel', seqLos);
+// Am PC: Strg+Mausrad zoomt, Mausrad spult (wie die Footage-Zeitleiste)
+seqCv.addEventListener('wheel', (e) => {
+  if (!reel) return;
+  e.preventDefault();
+  if (e.ctrlKey || e.metaKey) { SEQ.zoom = clamp(SEQ.zoom * Math.exp(-e.deltaY / 300), 1, 80); seqZeichnen(); return; }
+  const r = seqCv.getBoundingClientRect(), { pps } = seqAnsicht(r.width, seqTeile().gesamt);
+  const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+  stopPlay(); seqSpringe(seqZeit() + d / pps, true);
+}, { passive: false });
 
 // Filter: nur Bereiche ab n Sternen (0 = alle); aktueller Bereich bleibt, wenn er noch drin ist
 function seqFilterZeigen() { document.querySelectorAll('#seqFilter [data-min]').forEach((b) => b.classList.toggle('on', +b.dataset.min === (reel ? reel.min : 0))); }
