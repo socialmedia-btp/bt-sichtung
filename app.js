@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9b';
+const APP_VERSION = 'v4.9c';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -1351,6 +1351,14 @@ function draw() {
   }
 
   // Auswahl
+  S.selX = null;
+  // ✕ rechts oben an der markierten IN/OUT-Auswahl = löschen (Robert 11.11.: ältere Auswahl ließ sich schwer entfernen)
+  const selXZeichnen = (s, x0, x1, yy) => {
+    const bw = 24, bh = 22, bx = (x1 - x0 >= bw + 34 ? Math.min(x1, w - 4) - bw - 6 : Math.min(x1 + 6, w - bw - 4)), by = yy + 3;
+    ctx.fillStyle = '#ff453a'; ctx.beginPath(); roundRect(bx, by, bw, bh, 6); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = '700 13px sans-serif'; ctx.fillText('✕', bx + 6, by + 16);
+    S.selX = { id: s.id, track: s.track, box: [bx, by, bw, bh] };
+  };
   for (const s of sels()) {
     if (s.kind === 'marker') {
       const x = xOf(s.t); if (x < HEAD || x > w) continue;
@@ -1371,6 +1379,7 @@ function draw() {
       ctx.beginPath(); ctx.moveTo(x0, yy + hh - 2); ctx.lineTo(x1, yy + hh - 2); ctx.stroke(); ctx.setLineDash([]);
       ctx.fillStyle = '#f2c14e'; ctx.fillRect(x0 - 3, yy, 6, hh);
       ctx.font = '700 11px -apple-system, Segoe UI, sans-serif'; ctx.fillText('IN', x0 + 6, yy + 13);
+      if (cur && !S.ver) selXZeichnen(s, x0, x1, yy);
       continue;
     }
     ctx.fillStyle = cur ? '#f2c14e40' : '#f2c14e1c'; ctx.fillRect(x0, yy, x1 - x0, hh);
@@ -1385,6 +1394,7 @@ function draw() {
       ctx.fillStyle = '#1a1400'; ctx.font = '700 11px sans-serif';
       ctx.fillText('★'.repeat(s.stars) + (s.notes.length ? ' 🎙' : ''), x0 + 6, yy + hh - 9);
     }
+    if (cur && !S.ver) selXZeichnen(s, x0, x1, yy);
   }
 
   // Cut-Takes: eine Zeile je Aufnahme mit gelben Strichen; gültige Cuts zusätzlich als feine Linie über die Spuren
@@ -1544,6 +1554,10 @@ function hit(x, y) {
   const track = S.tracks[ti];
   if (x < HEAD) return { type: 'head', track };
   if (!track) return { type: 'empty' };
+  if (S.selX && S.selX.track === track.id) {   // ✕ der markierten Auswahl geht vor den Griffen
+    const [bx, by, bw, bh] = S.selX.box, s = sels().find((q) => q.id === S.selX.id);
+    if (s && x >= bx - 8 && x <= bx + bw + 8 && y >= by - 8 && y <= by + bh + 8) return { type: 'selx', s, track };
+  }
   // Griffe der Auswahl (aktuelle zuerst)
   const cand = [...sels()].filter((s) => s.kind === 'range' && s.track === track.id).sort((a) => (a === S.curSel ? -1 : 1));
   for (const s of cand) {
@@ -1639,7 +1653,7 @@ cv.addEventListener('pointermove', (e) => {
     showHandleFrame(); if (g.fine) updateLoupe();
     requestDraw(); return;
   }
-  if (g.type === 'lane' || g.type === 'sel' || g.type === 'empty' || g.type === 'head' || g.type === 'take' || g.type === 'takex' || g.type === 'comment') {
+  if (g.type === 'lane' || g.type === 'sel' || g.type === 'empty' || g.type === 'head' || g.type === 'take' || g.type === 'takex' || g.type === 'selx' || g.type === 'comment') {
     if (!g.moved) return;
     S.T = d2r(clamp(g.dT - dx / S.pps, -1, S.axis.total + 1));
     showFrame(false); requestDraw();
@@ -1668,6 +1682,10 @@ function endPointer(e) {
     if (g.marker) { S.curSel = g.marker; log('kommentar-gewaehlt', { id: g.marker.id }); renderSide(); }
     else if (S.ver && shotNow()) { S.curSel = null; log('kommentar-szene', { pos: +S.T.toFixed(3) }); toggleRec('szene'); }
     else { S.curSel = addMarker(); log('kommentar-neu', { pos: +S.T.toFixed(3) }); toggleRec(); }
+    g = null; requestDraw(); return;
+  }
+  if (!g.moved && !g.fine && g.type === 'selx') {
+    log('knopf', { act: 'auswahl-x' }); deleteSel(g.s); toast('IN/OUT gelöscht · ↶ Rückgängig holt sie zurück', 2200);
     g = null; requestDraw(); return;
   }
   if (!g.moved && !g.fine && (g.type === 'take' || g.type === 'takex')) {
