@@ -14,7 +14,8 @@
   --radius: 12px;
   --safe-l: env(safe-area-inset-left);
   --safe-r: env(safe-area-inset-right);
-  --safe-t: env(safe-area-inset-top);
+  /* iPadOS/iOS 26: unter der Statusleiste liegt eine Unschärfe-Zone → 18px Extra-Abstand, nur wenn es eine Statusleiste gibt */
+  --safe-t: calc(env(safe-area-inset-top) + min(calc(env(safe-area-inset-top) * 18), 18px));
   --safe-b: env(safe-area-inset-bottom);
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
