@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9e';
+const APP_VERSION = 'v4.9f';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -1224,7 +1224,7 @@ async function toggleRec(ziel) {
   const target = { pid: S.proj.id, ctx: ctxObj, selId: s.id, t: S.T };
   const chunks = []; const t0 = Date.now();
   let r;
-  try { r = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); }
+  try { r = new MediaRecorder(stream, { ...(mime ? { mimeType: mime } : {}), audioBitsPerSecond: 64000 }); }
   catch (e) { recStarting = false; stream.getTracks().forEach((x) => x.stop()); log('mikro-fehler', { name: e.name }); toast('Aufnahme nicht möglich'); return; }
   r.ondataavailable = (e) => e.data.size && chunks.push(e.data);
   r.onstop = async () => {
@@ -2529,15 +2529,46 @@ async function bkSend(silent) {
   if (!silent) { stopPlay(); $('btnSend').textContent = 'Senden …'; }
   const gen = S.ps.gen || 0;
   const data = await buildExport(); // ohne Diagnose-Log (Astra F03)
+  const notes = bkNotizenAuslagern(data);
   const body = JSON.stringify(data);
-  await bkQSet(pid, [...(await bkQ(pid)).filter((x) => x.fehler), { stand_id: data.stand_id, body, gen, t: Date.now() }]);
+  await bkQSet(pid, [...(await bkQ(pid)).filter((x) => x.fehler), { stand_id: data.stand_id, body, notes, gen, t: Date.now() }]);
   await bkSerial(() => bkFlush(pid, link, silent));
   if (S.proj === proj) await bkRender();
+}
+/* Sprachnotizen einzeln (Robert 11.11.: Stand mit vielen langen Notizen > 24 MiB → „zu groß“). Der Stand trägt statt `data`
+ * nur `bk: true`; jede Notiz geht einmal als eigene Datei an den Briefkasten (schon vorhandene werden übersprungen). */
+function bkNotizenAuslagern(data) {
+  const liste = [];
+  const alle = [...(data.selections || []), ...(data.versionen || []).flatMap((v) => v.kommentare || [])].flatMap((x) => x.notes || []);
+  for (const n of alle) if (n && n.data) { delete n.data; n.bk = true; liste.push({ id: n.id, mime: n.mime }); }
+  return liste;
+}
+async function bkNotizenHoch(link, notes, silent) {
+  let da;
+  try {
+    const r = await fetch(`${link.url}/v1/notizen?k=${encodeURIComponent(link.key)}`);
+    if (r.status >= 500 || r.status === 429) return 'netz';
+    const j = await r.json(); if (!j.ok) return 'Senden abgelehnt: ' + (j.fehler || r.status);
+    da = new Set(j.ids);
+  } catch { return 'netz'; }
+  const offen = notes.filter((n) => !da.has(n.id));
+  for (let i = 0; i < offen.length; i++) {
+    const n = offen[i], b = await DB.get('notes', n.id).catch(() => null);
+    if (!b) continue;   // Audio fehlt auf diesem Gerät (steht schon in „probleme“)
+    if (!silent) $('btnSend').textContent = `Senden … ${i + 1}/${offen.length} 🎙`;
+    let r; const ab = new AbortController(), to = setTimeout(() => ab.abort(), 120000);
+    try { r = await fetch(`${link.url}/v1/notiz?k=${encodeURIComponent(link.key)}&n=${encodeURIComponent(n.id)}`, { method: 'POST', headers: { 'content-type': n.mime || b.type || 'audio/mp4' }, body: b, signal: ab.signal }); }
+    catch { return 'netz'; } finally { clearTimeout(to); }
+    if (r.status >= 500 || r.status === 429) return 'netz';
+    if (!r.ok) { const j = await r.json().catch(() => ({})); return j.fehler === 'zu_gross' ? 'Eine Sprachnotiz ist zu lang (über 20 MB). Bitte über „Speichern“ als Datei schicken.' : 'Sprachnotiz abgelehnt: ' + (j.fehler || r.status); }
+  }
+  log('bk-notizen', { neu: offen.length, schon_da: notes.length - offen.length });
+  return 'ok';
 }
 // Alle wartenden Stände eines Projekts der Reihe nach senden
 async function bkFlush(pid, link, silent) {
   for (const e of (await bkQ(pid)).filter((x) => !x.fehler)) {
-    const res = await bkPost(link, e.body);
+    const res = e.notes && e.notes.length ? await bkNotizenHoch(link, e.notes, silent).then((r) => (r === 'ok' ? bkPost(link, e.body) : r)) : await bkPost(link, e.body);
     log('bk-senden', { ergebnis: res === 'ok' || res === 'netz' ? res : 'fehler', kb: Math.round(e.body.length / 1024), stand: e.stand_id });
     if (res === 'netz') { if (!silent) toast('Kein Internet – wird automatisch gesendet, sobald Netz da ist', 4000); return; }
     const q = await bkQ(pid), i = q.findIndex((x) => x.stand_id === e.stand_id);
