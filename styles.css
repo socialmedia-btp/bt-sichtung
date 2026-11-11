@@ -282,3 +282,9 @@ body.slip .fs-mini, body.slip .cutbar { display: none !important; }
 body.reel .tl-wrap { display: none; }
 body.reel .reel-bar .reel-end { display: none; }
 @media (max-width: 760px) { .seq-wrap { height: 240px; } }
+/* Vollbild (iPad): Sequenz-Zeitleiste unten festmachen wie die normale Zeitleiste (Robert 11.11.: lag oben) */
+body.fs .seq-wrap { position: fixed; left: 0; right: 0; bottom: 0; height: 270px; z-index: 5; border-top: none;
+  padding-left: var(--safe-l); padding-right: var(--safe-r);
+  background: linear-gradient(180deg, transparent, rgba(0,0,0,0.6) 22%, rgba(0,0,0,0.75)); }
+body.fs.reel .tc, body.fs.reel .fs-mini { bottom: 286px; }
+body.fs.reel .cutbar { bottom: 350px; }

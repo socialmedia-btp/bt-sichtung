@@ -55,6 +55,7 @@ function seqZeichnen() {
     const farbe = (S.tracks[tr] && S.tracks[tr].color) || TRACK_COLORS[0];
     g.save(); g.beginPath(); g.rect(bx, y0, bw, bh); g.clip();
     g.fillStyle = '#1f2228'; g.fillRect(bx, y0, bw, bh);
+    g.globalAlpha = 0.3; g.fillStyle = farbe; g.fillRect(bx, y0, bw, bh); g.globalAlpha = 1;   // Block auch ohne Filmstreifen gut sichtbar
     const img = c && S.sprites.get(c.id);
     if (img && img.complete && img.naturalWidth && c.spriteN) {
       const th = bh, tw = th * 16 / 9;
@@ -72,6 +73,7 @@ function seqZeichnen() {
       if (p.s.notes && p.s.notes.length && bw > 70) { g.fillStyle = '#fff'; g.fillText('🎙' + p.s.notes.length, bx + 6, y0 + bh - 20); }
     }
     g.restore();
+    g.strokeStyle = farbe; g.lineWidth = 1; g.strokeRect(bx + 0.5, y0 + 0.5, bw - 1, bh - 1);
     if (i === reel.i) { g.strokeStyle = '#f2c14e'; g.lineWidth = 2; g.strokeRect(bx + 1, y0 + 1, bw - 2, bh - 2); }
   });
   // eigener Abspielkopf
@@ -129,3 +131,6 @@ $('seqZu').addEventListener('click', () => endReel());
 // mitlaufen: beim Abspielen und nach jeder Änderung (Sterne, Notizen) neu zeichnen
 const _seqDrawOrig = draw;
 draw = function () { _seqDrawOrig(); if (reel) seqZeichnen(); };   // eslint-disable-line no-global-assign
+// Vollbild an/aus ändert die Größe der Sequenz-Leiste ohne resize-Ereignis (iPad) → mit der Haupt-Zeitleiste neu vermessen
+const _seqResizeOrig = resizeCanvas;
+resizeCanvas = function () { _seqResizeOrig.apply(this, arguments); if (reel) seqResize(); };   // eslint-disable-line no-global-assign
