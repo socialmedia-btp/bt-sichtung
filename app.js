@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9g';
+const APP_VERSION = 'v4.9h';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -2566,7 +2566,8 @@ async function bkRender() {
   b.classList.toggle('hidden', !link);
   $('btnSave').classList.toggle('primary', !link);
   if (!link) return;
-  const q = await bkQ(pid), wartet = q.some((x) => !x.fehler), fehler = q.some((x) => x.fehler);
+  // ⚠ nur, wenn ein abgelehnter Stand NEUER ist als der zuletzt erfolgreich gesendete (sonst ist er überholt)
+  const q = await bkQ(pid), wartet = q.some((x) => !x.fehler), fehler = q.some((x) => x.fehler && (x.gen || 0) > ((S.ps && S.ps.bkGen) || 0));
   const gesendet = S.ps && (S.ps.bkGen || 0) >= (S.ps.gen || 0) && (S.ps.gen || 0) > 0;
   b.textContent = fehler ? 'Senden ⚠' : wartet ? 'Senden ⏳' : gesendet ? 'Gesendet ✓' : 'Senden';
   b.title = fehler ? 'Ein Stand wurde abgelehnt – erneut senden oder als Datei speichern' : wartet ? 'Wartet auf Internet – wird automatisch nachgesendet' : `An Blue Tacit senden (${link.name})`;
@@ -2643,6 +2644,8 @@ async function bkFlush(pid, link, silent) {
     const q = await bkQ(pid), i = q.findIndex((x) => x.stand_id === e.stand_id);
     if (res === 'ok') {
       if (i >= 0) q.splice(i, 1);
+      // ältere abgelehnte Stände sind durch diesen vollständigen Stand überholt → weg (sonst bleibt „Senden ⚠“ stehen)
+      for (let k = q.length - 1; k >= 0; k--) if (q[k].fehler && (q[k].gen || 0) <= (e.gen || 0)) q.splice(k, 1);
       if (S.ps && S.proj && (await projPid(S.proj)) === pid) { S.ps.bkGen = Math.max(S.ps.bkGen || 0, e.gen || 0); save(); }
       if (!silent) toast('An Blue Tacit gesendet ✓', 2500);
     } else {
