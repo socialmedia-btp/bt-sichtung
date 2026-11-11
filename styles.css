@@ -73,10 +73,13 @@ input[type=text], textarea { font: inherit; color: var(--text); background: var(
 
 /* Editor */
 .main { flex: 1; min-height: 0; display: flex; }
-.viewer { flex: 1; min-width: 0; display: flex; flex-direction: column; background: #000; }
-.video-wrap { position: relative; flex: 1; min-height: 120px; display: flex; align-items: center; justify-content: center;
+.viewer { flex: 1; min-width: 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column; background: #000; }
+/* v4.9d: Video absolut im Rahmen – sonst wächst der Rahmen bei Hochformat-Videos (9:16) mit der natürlichen Videohöhe und schiebt
+   Transport + Seitenleiste aus dem Bild (Vietnam-Reel am Handy, 11.11.2026) */
+.video-wrap { position: relative; flex: 1 1 0; min-height: 120px; overflow: hidden; display: flex; align-items: center; justify-content: center;
   touch-action: manipulation; }
 video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+.video-wrap > video { position: absolute; inset: 0; }
 .no-clip { position: absolute; color: var(--muted); }
 .hud { position: absolute; left: 12px; top: 10px; font-size: 13px; color: #fff; text-shadow: 0 1px 3px #000; pointer-events: none; }
 .hud .cam { font-weight: 700; }
@@ -176,10 +179,22 @@ body.fs .live-log { top: calc(70px + var(--safe-t)); bottom: auto; max-height: 3
 
 @media (max-width: 900px), (orientation: portrait) {
   .main { flex-direction: column; }
-  .side { width: auto; height: 34vh; border-left: none; border-top: 0.5px solid var(--line); }
-  .video-wrap { min-height: 30vh; }
+  .viewer { flex: 1 1 0; }
+  .side { width: auto; height: 34vh; flex: none; overflow: auto; border-left: none; border-top: 0.5px solid var(--line); }
+  .video-wrap { min-height: 18vh; }
   .tl-wrap { height: 240px; }
   .home-actions { grid-template-columns: 1fr; }
+}
+/* v4.9d: Handy hochkant – Transport kompakt in zwei Reihen (Mikro bleibt sichtbar), Seitenleiste und Zeitleiste etwas niedriger */
+@media (max-width: 600px) {
+  .side { height: 28vh; }
+  .tl-wrap { height: 170px; }
+  .transport { gap: 4px; padding: 5px 6px; }
+  .transport button { min-width: 36px; min-height: 38px; padding: 3px 6px; }
+  .transport .play { min-width: 54px; min-height: 42px; font-size: 18px; margin: 0 3px; }
+  .transport .rec { min-width: 46px; min-height: 42px; margin-left: 4px; }
+  .transport .sep { width: 2px; }
+  .tc { font-size: 11px; padding: 0 6px 4px; gap: 8px; }
 }
 
 /* ---------- Cut-Takt ---------- */
