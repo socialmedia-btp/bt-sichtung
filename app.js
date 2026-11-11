@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9f';
+const APP_VERSION = 'v4.9g';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -867,10 +867,49 @@ const sels = () => S.state.selections;
 // Bildindex wie in applySeek(): das gerade angezeigte Bild ist floor(t·fps) → In/Out/±1 nutzen dieselbe Rundung
 const frameOf = (local, c) => Math.floor(local * c.fps + 1e-4);
 function snap(local, c) { return clamp(frameOf(local, c) / c.fps, 0, c.dur); }
+/* ---------- Fangzonen an Clip-/Shot-Grenzen (Robert 11.11.) ----------
+ * Exakter erster/letzter Frame ohne Ranzoomen: Zwischen zwei Clips der aktiven Spur gehört die Hälfte nach dem Clip zum OUT
+ * (= letztes Bild des Clips), die Hälfte vor dem nächsten Clip zum IN (= erstes Bild). Zusätzlich FANG_IN px innen am Clip-Rand.
+ * In der Versionsansicht dasselbe an jeder Shot-Grenze (lückenlos: je FANG_IN px links OUT, rechts IN). Alles in Bildschirm-px,
+ * damit es bei jeder Zoomstufe greift. */
+const FANG_IN = 16, FANG_RAND = 60;
+function fangTeile() {
+  if (S.ver && S.vsegs && S.clips[0]) { const c = S.clips[0]; return S.vsegs.map((x) => ({ c, r0: c.s + x.a, r1: c.s + x.b, l0: x.a, l1: Math.min(x.b, c.dur) })); }
+  return S.clips.filter((c) => c.track === S.activeTrack).sort((a, b) => a.s - b.s).map((c) => ({ c, r0: c.s, r1: c.s + c.dur, l0: 0, l1: c.dur }));
+}
+// Zonen in Bildschirm-x: {art:'in'|'out', x0, x1, c, t (lokale Zeit im Clip), xg (Grenze)}
+function fangZonen() {
+  const T = fangTeile(), z = [];
+  T.forEach((p, i) => {
+    const xs = xOf(p.r0), xe = xOf(p.r1), vor = T[i - 1], nach = T[i + 1];
+    const xvE = vor ? xOf(vor.r1) : null, xnS = nach ? xOf(nach.r0) : null;
+    const innen = Math.min(FANG_IN, Math.max(2, (xe - xs) / 2));
+    z.push({ art: 'in', c: p.c, t: p.l0, xg: xs, x1: xs + innen, x0: xvE == null ? xs - FANG_RAND : xvE < xs ? (xvE + xs) / 2 : xs - innen });
+    z.push({ art: 'out', c: p.c, t: p.l1, xg: xe, x0: xe - innen, x1: xnS == null ? xe + FANG_RAND : xnS > xe ? (xe + xnS) / 2 : xe + innen });
+  });
+  return z;
+}
+// Zone unter dem Abspielkopf (nur eine bestimmte Art oder beide)
+function fangAm(art) {
+  const px = xOf(S.T);
+  return fangZonen().find((z) => (!art || z.art === art) && px >= z.x0 && px < z.x1) || null;
+}
+// IN/OUT-Taste: in der Lücke zwischen zwei Clips greift die ganze Lücke (IN → nächster Clip, OUT → voriger Clip)
+function fang(art) {
+  const z = fangAm(art); if (z) return z;
+  if (S.ver || clipAt(S.activeTrack, S.T)) return null;
+  const T = fangTeile();
+  if (art === 'in') { const n = T.find((p) => p.r0 > S.T); return n && T.some((p) => p.r1 <= S.T) ? { art, c: n.c, t: n.l0 } : null; }
+  const v = [...T].reverse().find((p) => p.r1 <= S.T); return v && T.some((p) => p.r0 > S.T) ? { art, c: v.c, t: v.l1 } : null;
+}
+// Abspielkopf auf das gefangene Bild stellen (IN: erstes Bild, OUT: letztes Bild), damit man sieht, was gesetzt wurde
+function fangZeigen(f) { S.activeTrack = f.c.track; S.T = f.c.s + (f.art === 'in' ? f.t : Math.max(f.t - 1 / f.c.fps, 0)) + 1e-4; showFrame(true); flash(f.art === 'in' ? 'IN = erstes Bild' : 'OUT = letztes Bild'); }
 function markIn() {
-  const c = clipAt(S.activeTrack, S.T) || shownClip();
+  const f = fang('in');
+  const c = f ? f.c : clipAt(S.activeTrack, S.T) || shownClip();
   if (!c) { toast('Keine Aufnahme am Playhead'); return; }
-  const t = snap(S.T - c.s, c);
+  const t = f ? f.t : snap(S.T - c.s, c);
+  if (f) fangZeigen(f);
   const cur = S.curSel && S.curSel.kind === 'range' && S.curSel.clipId === c.id && t < S.curSel.outT && S.curSel.open ? S.curSel : null;
   if (cur) { cur.inT = t; }
   else newOpenSel(c, t);
@@ -884,9 +923,11 @@ function newOpenSel(c, t) {
   sels().push(S.curSel);
 }
 function markOut() {
-  const c = clipAt(S.activeTrack, S.T) || shownClip();
+  const f = fang('out');
+  const c = f ? f.c : clipAt(S.activeTrack, S.T) || shownClip();
   if (!c) { toast('Keine Aufnahme am Playhead'); return; }
-  const t = snap(S.T - c.s + 1 / c.fps, c); // Out schließt das aktuelle Bild ein
+  const t = f ? f.t : snap(S.T - c.s + 1 / c.fps, c); // Out schließt das aktuelle Bild ein
+  if (f) fangZeigen(f);
   const cur = (S.curSel && S.curSel.kind === 'range' && S.curSel.clipId === c.id && t > S.curSel.inT ? S.curSel : null)
     || sels().find((x) => x.kind === 'range' && x.open && x.clipId === c.id && t > x.inT) || null;
   if (cur) { cur.outT = t; cur.open = false; S.curSel = cur; }
@@ -1350,6 +1391,30 @@ function draw() {
     }
   }
 
+  // Fangzonen der aktiven Spur: dezent; die Zone unter dem Abspielkopf deutlich mit „IN“/„OUT“
+  {
+    const ti = S.ver ? 0 : S.tracks.findIndex((t) => t.id === S.activeTrack);
+    if (ti >= 0) {
+      const yy = y(ti) + 2, hh = lh - 8, px = xOf(S.T);
+      for (const z of fangZonen()) {
+        const a = Math.max(z.x0, HEAD), b = Math.min(z.x1, w); if (b <= a) continue;
+        const hier = px >= z.x0 && px < z.x1;
+        ctx.fillStyle = hier ? 'rgba(242,193,78,0.30)' : 'rgba(242,193,78,0.08)'; ctx.fillRect(a, yy, b - a, hh);
+        // Klammer an der Grenze: [ = IN (erstes Bild), ] = OUT (letztes Bild)
+        if (z.xg >= HEAD && z.xg <= w) {
+          ctx.fillStyle = hier ? '#f2c14e' : 'rgba(242,193,78,0.45)';
+          const k = z.art === 'in' ? 1 : -1;
+          ctx.fillRect(z.xg - (k < 0 ? 2 : 0), yy, 2, hh); ctx.fillRect(z.art === 'in' ? z.xg : z.xg - 7, yy, 7, 2); ctx.fillRect(z.art === 'in' ? z.xg : z.xg - 7, yy + hh - 2, 7, 2);
+        }
+        if (hier) {
+          ctx.fillStyle = '#f2c14e'; ctx.font = '700 11px -apple-system, Segoe UI, sans-serif';
+          const txt = z.art === 'in' ? 'IN ▸' : '◂ OUT', tw = ctx.measureText(txt).width;
+          ctx.fillText(txt, z.art === 'in' ? Math.max(HEAD + 2, z.xg - tw - 4) : Math.min(w - tw - 2, z.xg + 4), yy + hh / 2 + 4);
+        }
+      }
+    }
+  }
+
   // Auswahl
   S.selX = null;
   // ✕ rechts oben an der markierten IN/OUT-Auswahl = löschen (Robert 11.11.: ältere Auswahl ließ sich schwer entfernen)
@@ -1605,6 +1670,10 @@ function longPressMark() {
 // In bzw. Out am Abspielzeiger: erstes langes Drücken = In, zweites = Out (Timeline oder Video)
 function markAtPlayhead() {
   stopPlay();
+  // Langes Drücken in einer Fangzone: OUT-Hälfte = OUT am letzten Bild, IN-Hälfte = IN am ersten Bild
+  const fz = fangAm();
+  if (fz && fz.art === 'out') { markOut(); if (navigator.vibrate) navigator.vibrate(15); return; }
+  if (fz && fz.art === 'in') { markIn(); if (navigator.vibrate) navigator.vibrate(15); return; }
   const c = clipAt(S.activeTrack, S.T) || shownClip();
   if (!c) { toast('Am Abspielzeiger ist kein Clip'); return; }
   S.activeTrack = c.track;
