@@ -375,3 +375,10 @@ body.fs.reel .cutbar { bottom: 350px; }
 
 /* Cut kommentieren (v4.9q) */
 .cut-notiz { min-width: 62px; min-height: 62px; border-radius: 31px; font-size: 24px; background: #ff9f0a; color: #1a1000; }
+
+/* Tempo (v4.9r) */
+.tempo-row { gap: 8px; flex-wrap: wrap; }
+.tempo-sel { font: inherit; color: var(--text); background: var(--panel2, #2a2c30); border: 1px solid var(--line); border-radius: 10px;
+  min-height: 44px; padding: 0 10px; }
+.tempo-hint { font-size: 12px; color: #8b9098; flex: 1; min-width: 120px; }
+.tempo-hint.warn { color: #ff9f0a; }

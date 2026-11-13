@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9q';
+const APP_VERSION = 'v4.9r';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -821,6 +821,8 @@ function playTick() {
     video.play().catch((e) => log('play-rejected', { name: e.name, nach: 'steht' }));
   }
   const c = S.byId.get(video.dataset.cid);
+  const rate = tempoAt(S.T) / 100;
+  if (Math.abs(video.playbackRate - rate) > 0.001) { try { video.playbackRate = rate; video.defaultPlaybackRate = rate; } catch { /* Gerät kann das Tempo nicht */ } }
   if (c && !video.seeking && !S.switching) {
     S.T = c.s + video.currentTime;
     const want = shownClip(S.T + 0.001);
@@ -1115,7 +1117,7 @@ function renderSide() {
     const el = document.createElement('div');
     el.className = 'sel-item' + (s === S.curSel ? ' cur' : '');
     el.innerHTML = `<span class="dot" style="background:${L.dot}"></span><div class="t"><div class="l1">${esc(L.l1)}</div><div class="l2">${esc(L.l2)}</div></div>
-      <span class="st">${'★'.repeat(s.stars)}${anzSprache(s) ? ' 🎙' + anzSprache(s) : ''}${anzAnh(s) ? ' 📎' + anzAnh(s) : ''}</span>`;
+      <span class="st">${s.tempo ? '⏱' + s.tempo + '% ' : ''}${'★'.repeat(s.stars)}${anzSprache(s) ? ' 🎙' + anzSprache(s) : ''}${anzAnh(s) ? ' 📎' + anzAnh(s) : ''}</span>`;
     el.onclick = () => jumpTo(s);
     list.appendChild(el);
   }
@@ -1136,7 +1138,8 @@ function renderCurrent() {
       <div class="card-row"><span class="lbl">OUT</span><span class="val">${clock(c.s + s.outT, c.fps)}</span>
         <button data-k="out-1">−1</button><button data-k="out+1">+1</button></div>
       <div class="card-row"><span class="lbl">Länge</span><span class="val">${durTxt(s.outT - s.inT)} · ${Math.round((s.outT - s.inT) * c.fps)} Bilder</span>
-        <button data-k="playsel">▶ Auswahl</button></div>`;
+        <button data-k="playsel">▶ Auswahl</button></div>
+      ${tempoHtml(s.tempo, c.fps)}`;
   }
   h += `<div class="card-row stars">${[1, 2, 3].map((n) => `<button data-k="star${n}" class="${s.stars >= n ? 'on' : ''}">★</button>`).join('')}</div>
     ${s.cut ? '<div class="hint">Kommentar zu diesem Schnitt – hat Vorrang vor den anderen Kommentaren an dieser Stelle.</div>' : ''}
@@ -1144,6 +1147,7 @@ function renderCurrent() {
     ${s.cut ? '<button data-k="cutrec" class="rec-scene">🎙 Sprachnotiz zum Cut</button>' : ''}
     <div class="notes">${notizZeilen(s.notes, (i) => `data-k="pn${i}"`, (i) => `data-k="dn${i}"`)}</div>`;
   box.innerHTML = h;
+  tempoBind(box, () => (sels().includes(s) ? s : null), () => S.byId.get(s.clipId).fps);
   box.querySelector('#selText').oninput = (e) => { s.text = e.target.value; save(); };
   box.querySelector('#selText').onchange = () => changed();
   box.querySelectorAll('button[data-k]').forEach((b) => b.onclick = async () => {
@@ -1182,6 +1186,7 @@ function renderShotCard(box) {
     <div class="hint" style="margin:2px 0 4px">${!S.footClips.length ? 'Bewerten und kommentieren · Bild tauschen/verschieben macht Blue Tacit im Schnitt'
       : sh.editierbar ? 'Änderbar' : 'Gesperrt: ' + esc(sh.grund || '') + ' – kommentierbar'}</div>
     ${slipCardHtml(sh)}
+    ${tempoHtml((shotComment(sh) || {}).tempo, sh.src_fps)}
     <div class="card-row stars">${[1, 2, 3].map((n) => `<button data-r="${n}" class="${w !== 'rot' && w >= n ? 'on' : ''}" title="${n} Stern${n > 1 ? 'e' : ''} (Taste ${n})">★</button>`).join('')}
       <button data-r="rot" class="rot${w === 'rot' ? ' on' : ''}" title="Muss auf jeden Fall raus (Taste X)">✕ Muss raus</button></div>
     <div class="hint">★ brauchbar · ★★ gut · ★★★ Favorit · <b>Muss raus</b> = darf auf keinen Fall drin bleiben (wird nur markiert). Ohne Bewertung = noch offen.</div>
@@ -1190,9 +1195,10 @@ function renderShotCard(box) {
       <button data-k="rec" class="rec-scene">🎙 Sprachnotiz zu dieser Szene</button></div>`;
   box.querySelectorAll('[data-r]').forEach((x) => x.onclick = () => rateShot(x.dataset.r === 'rot' ? 'rot' : +x.dataset.r));
   slipCardBind(box, sh);
+  tempoBind(box, () => shotComment(sh, true), () => sh.src_fps);
   const ti = box.querySelector('#shotText');
   ti.oninput = (e) => { const m = shotComment(sh, true); m.text = e.target.value; save(); };
-  ti.onchange = () => { const m = shotComment(sh); if (m && !m.text && !m.notes.length) S.state.selections = sels().filter((x) => x !== m); changed(); };
+  ti.onchange = () => { const m = shotComment(sh); if (m && !m.text && !m.notes.length && !m.tempo) S.state.selections = sels().filter((x) => x !== m); changed(); };
   box.querySelector('[data-k=rec]').onclick = () => toggleRec('szene');
   box.querySelector('[data-anh]').onclick = () => anhaengen(() => shotComment(sh, true));
   box.querySelectorAll('[data-pn]').forEach((x) => x.onclick = () => playNote(shotComment(sh).notes[+x.dataset.pn]));
@@ -1325,6 +1331,48 @@ async function playNote(n) {
   const b = await DB.get('notes', n.id); if (!b) return;
   if (noteAudio) noteAudio.pause();
   noteAudio = new Audio(URL.createObjectURL(b)); noteAudio.play();
+}
+
+/* ---------- Tempo (v4.9r, Robert 13.11.) ----------
+ * Je Bereich bzw. Szene ein Wunschtempo 10–200 % (10er-Schritte). Die Vorschau spielt nur grob in diesem Tempo (nicht flüssig);
+ * gemeint ist die Vorgabe für den Schnitt: Reichen die Bilder der Quelle (z. B. 50p in 25p-Sequenz → bis 50 % echt), geht es ohne
+ * Weiteres – sonst muss das Material mit Topaz (Frame-Interpolation) gestreckt werden. Das steht in tempoInfo und in auswahl.md. */
+const TEMPI = Array.from({ length: 20 }, (_, i) => (i + 1) * 10);
+const seqFps = () => (S.ver ? S.ver.manifest.fps : (S.proj && S.proj.meta && S.proj.meta.seq_fps) || 25);
+function tempoInfo(tempo, srcFps) {
+  if (!tempo || tempo === 100) return null;
+  const sf = seqFps(), q = +srcFps || sf, noetig = sf * 100 / tempo;
+  const topaz = tempo < 100 && q < noetig - 0.5;
+  return { quelle_fps: +q.toFixed(3), seq_fps: sf, topaz, faktor: topaz ? Math.ceil((noetig / q) * 10) / 10 : 1 };
+}
+function tempoHint(tempo, srcFps) {
+  const i = tempoInfo(tempo, srcFps);
+  if (!i) return 'normal';
+  if (tempo > 100) return `schneller · ${i.quelle_fps} fps`;
+  return i.topaz ? `⚠ Topaz nötig: Quelle ${i.quelle_fps} fps → Bilder ×${String(i.faktor).replace('.', ',')}` : `✓ echte Zeitlupe (Quelle ${i.quelle_fps} fps)`;
+}
+const tempoHtml = (tempo, srcFps) => `<div class="card-row tempo-row"><span class="lbl">⏱ Tempo</span>
+  <select class="tempo-sel" title="Wunschtempo für diese Stelle">${TEMPI.map((t) => `<option value="${t}"${t === (tempo || 100) ? ' selected' : ''}>${t} %</option>`).join('')}</select>
+  <span class="tempo-hint${tempoInfo(tempo, srcFps) && tempoInfo(tempo, srcFps).topaz ? ' warn' : ''}">${esc(tempoHint(tempo, srcFps))}</span></div>`;
+function tempoBind(box, zielFn, fpsFn) {
+  const sel = box.querySelector('.tempo-sel'); if (!sel) return;
+  sel.onchange = () => {
+    const ziel = zielFn(); if (!ziel) return;
+    const t = +sel.value;
+    if (t === 100) { delete ziel.tempo; delete ziel.tempoInfo; } else { ziel.tempo = t; ziel.tempoInfo = tempoInfo(t, fpsFn()); }
+    log('tempo', { zu: ziel.id, t });
+    changed();
+    if (t !== 100) toast(t < 100 ? `⏱ ${t} % – Vorschau läuft langsamer (nicht flüssig, nur zur Orientierung)` : `⏱ ${t} % – Vorschau läuft schneller`, 3000);
+  };
+}
+// Tempo am Abspielzeiger: Bereich mit Tempo (aktive Spur zuerst) bzw. Szene der Version; beim Cut-Takt immer 100 %
+function tempoAt(T) {
+  if (CUT.rec || CUT.countdown) return 100;
+  const hits = sels().filter((x) => x.kind === 'range' && x.tempo && (() => { const [a, b] = selRange(x); return T >= a && T <= b; })());
+  const h = hits.find((x) => x.track === S.activeTrack) || hits[0];
+  if (h) return h.tempo;
+  if (S.ver) { const sg = shotAt(T - S.clips[0].s); const m = sg && shotComment(sg.shot); if (m && m.tempo) return m.tempo; }
+  return 100;
 }
 
 /* ---------- Anhänge an Kommentaren (v4.9p, Robert 13.11.) ----------
@@ -1937,7 +1985,7 @@ async function exportCtx(ctx, view, probleme, wo) {
       if (b) notes.push({ id: n.id, mime: n.mime, dur: n.dur, ...anhFelder(n), created: new Date(n.created).toISOString(), data: await blobToB64(b) });
       else missingAudio++;
     }
-    const base = { id: s.id, kind: s.kind, stars: s.stars, text: s.text, created: new Date(s.created).toISOString(), notes, ...(s.shot ? { shot: s.shot } : {}), ...(s.cut ? { cut: true } : {}) };
+    const base = { id: s.id, kind: s.kind, stars: s.stars, text: s.text, created: new Date(s.created).toISOString(), notes, ...(s.shot ? { shot: s.shot } : {}), ...(s.cut ? { cut: true } : {}), ...(s.tempo ? { tempo: s.tempo, tempo_info: s.tempoInfo || null } : {}) };
     if (s.kind === 'marker') {
       selections.push(view.isVersion ? { ...base, t: rel(s.t), frame: Math.round(rel(s.t) * view.fps), clock: clock(rel(s.t), view.fps) }
         : { ...base, clock: clock(s.t), t: s.t });
@@ -2114,7 +2162,7 @@ async function importSels(arr, clipIdOf) {
       }
       notes.push({ id: n.id, mime: n.mime, dur: n.dur, ...anhFelder(n), created: Date.parse(n.created) });
     }
-    const base = { id: x.id, kind: x.kind, stars: x.stars || 0, text: x.text || '', notes, created: Date.parse(x.created) };
+    const base = { id: x.id, kind: x.kind, stars: x.stars || 0, text: x.text || '', notes, created: Date.parse(x.created), ...(x.tempo ? { tempo: x.tempo, tempoInfo: x.tempo_info || null } : {}) };
     if (x.kind === 'marker') { list.push({ ...base, t: x.t, ...(x.shot ? { shot: x.shot } : {}), ...(x.cut ? { cut: true } : {}) }); continue; }
     const cid = clipIdOf(x);
     if (cid) list.push({ ...base, clipId: cid, track: x.track, inT: x.in, outT: x.out, open: !!x.open });
