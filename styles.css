@@ -269,12 +269,20 @@ body.fs.ui-weg .ui-griff { display: block; position: fixed; left: 50%; bottom: c
 #btnMusik { padding-left: 12px; padding-right: 12px; }
 #btnMusik.neu { animation: pnPuls 1.2s ease-in-out infinite; }
 .mu-reel { margin: 14px 0 6px; font-weight: 700; font-size: 17px; }
-.mu-song { display: flex; align-items: center; gap: 10px; background: var(--panel2); border-radius: 10px; padding: 8px 10px; margin: 6px 0; }
+.mu-song { display: flex; flex-direction: column; gap: 6px; background: var(--panel2); border-radius: 10px; padding: 8px 10px; margin: 6px 0; }
+.mu-song.mu-eigen { flex-direction: row; align-items: center; }
+.mu-kopf { display: flex; align-items: flex-start; gap: 10px; }
+.mu-player { display: flex; align-items: center; gap: 10px; }
+.mu-player .mu-pos { flex: 1; min-width: 0; height: 32px; accent-color: #f2c14e; }
+.mu-player .mu-zeit { font: 600 13px ui-monospace, Menlo, Consolas, monospace; color: var(--muted); min-width: 92px; text-align: right; }
+.mu-player .mu-rec { min-width: 46px; min-height: 46px; border-radius: 23px; font-size: 18px; }
+.mu-player .mu-rec.rec { background: var(--red); color: #fff; animation: pnPuls 1.2s ease-in-out infinite; }
+.mu-notiz { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
 .mu-song.on { box-shadow: 0 0 0 2px #f2c14e; }
 .mu-song .t { flex: 1; min-width: 0; }
 .mu-song .l2 { color: var(--muted); font-size: 13px; }
 .mu-song .warum { font-size: 13px; margin-top: 2px; }
-.mu-song button.play { min-width: 46px; min-height: 46px; border-radius: 23px; font-size: 18px; }
+.mu-player button.play { min-width: 46px; min-height: 46px; border-radius: 23px; font-size: 18px; }
 .mu-song input[type=radio] { width: 24px; height: 24px; accent-color: #f2c14e; }
 .mu-liste { max-height: 58vh; overflow: auto; }
 .current #shotText { margin-top: 8px; }

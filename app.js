@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9m';
+const APP_VERSION = 'v4.9n';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -2179,52 +2179,160 @@ async function muPruefen(zeigen) {
     }
   } catch { /* offline – später nochmal */ } finally { muLaeuft = false; }
 }
-function muStop() { if (muAudio) { muAudio.pause(); muAudio = null; } document.querySelectorAll('.mu-song button.play').forEach((x) => { x.textContent = '▶'; }); }
+/* Je Song (Robert/Lena 13.11.): eigene Abspielleiste (Zeit / Dauer, Schieberegler zum Spulen) und Sprachnotiz.
+ * Notizen je Vorschlagsrunde in S.ps.musikNotizen[erstellt][song_id] (Audio in IndexedDB „notes“), gehen mit „Senden“ mit –
+ * auch ohne Wahl („gefällt, aber bitte mehr mit Gesang“). */
+let muRec = null, muZieht = false; const muProben = new Map();   // song_id → Blob-URL der Hörprobe
+const muZeit = (s) => (Number.isFinite(s) ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` : '0:00');
+function muStop() {
+  if (muAudio) { muAudio.pause(); muAudio = null; }
+  document.querySelectorAll('.mu-player button.play').forEach((x) => { x.textContent = '▶'; });
+}
+function muNotizenVon(sid) { const r = ((S.ps.musikNotizen || {})[muDaten.erstellt]) || {}; return r[sid] || []; }
+function muNotizenSetzen(sid, liste) {
+  S.ps.musikNotizen = S.ps.musikNotizen || {};
+  const r = S.ps.musikNotizen[muDaten.erstellt] = S.ps.musikNotizen[muDaten.erstellt] || {};
+  if (liste.length) r[sid] = liste; else delete r[sid];
+  save(); markSaved(false);
+}
+function muNotizHtml(sid) {
+  return muNotizenVon(sid).map((n, i) => `<div class="mu-notiz">🎙 Notiz ${i + 1} · ${muZeit(n.dur)}
+    <button type="button" data-np="${esc(sid)}|${i}">▶</button><button type="button" class="ghost danger" data-nd="${esc(sid)}|${i}">✕</button></div>`).join('');
+}
+async function muAufnahme(sid, knopf, box) {
+  if (muRec) { muRec.stop(); return; }
+  if (rec || recStarting || pnRec) { toast('Erst die andere Aufnahme beenden'); return; }
+  muStop();
+  const mime = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm'].find((x) => window.MediaRecorder && MediaRecorder.isTypeSupported(x));
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch (e) { log('mikro-fehler', { name: e.name, wo: 'musik' }); toast('Kein Mikrofonzugriff – in den Einstellungen erlauben'); return; }
+  let r;
+  try { r = new MediaRecorder(stream, { ...(mime ? { mimeType: mime } : {}), audioBitsPerSecond: 64000 }); }
+  catch { stream.getTracks().forEach((x) => x.stop()); toast('Aufnahme nicht möglich'); return; }
+  const chunks = [], t0 = Date.now(), runde = muDaten.erstellt;
+  r.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  r.onstop = async () => {
+    stream.getTracks().forEach((x) => x.stop());
+    muRec = null; knopf.classList.remove('rec'); knopf.textContent = '🎙';
+    const blob = new Blob(chunks, { type: r.mimeType || mime || 'audio/mp4' });
+    const n = { id: uid(), mime: blob.type, dur: (Date.now() - t0) / 1000, created: Date.now() };
+    await DB.put('notes', blob, n.id);
+    if (!muDaten || muDaten.erstellt !== runde) return;
+    muNotizenSetzen(sid, [...muNotizenVon(sid), n]);
+    log('musik-notiz', { s: sid, dauer: +n.dur.toFixed(1) });
+    if (box && box.isConnected) box.innerHTML = muNotizHtml(sid);
+    toast('Notiz zum Song gespeichert ✓', 1500);
+  };
+  muRec = r; r.start(); knopf.classList.add('rec'); knopf.textContent = '■';
+}
 function muFenster() {
   if (!muDaten) return;
   S.ps.musikGesehen = muDaten.erstellt; save(); $('btnMusik').classList.remove('neu');
   const m = muDaten, w = m.wahl || {};
-  const fmt = (s) => (s ? `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}` : '');
+  const fmt = (s) => (s ? muZeit(s) : '');
   modal(`<h2>🎵 Musikvorschläge</h2>${m.hinweis ? `<p class="hint">${esc(m.hinweis)}</p>` : ''}
-    ${m.wahl ? `<p class="hint">✓ Deine Wahl ist bei Blue Tacit angekommen${m.gewaehlt ? ' (' + new Date(m.gewaehlt).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) + ')' : ''}. Du kannst sie noch ändern.</p>` : ''}
+    ${m.gewaehlt ? `<p class="hint">✓ Deine Rückmeldung ist bei Blue Tacit angekommen (${new Date(m.gewaehlt).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}). Du kannst sie noch ändern.</p>` : ''}
+    <p class="hint">▶ anhören, am Regler spulen · 🎙 Notiz zum Song (z. B. „gefällt, aber mit Gesang“) · je Reel einen Song wählen – oder nur Notizen schicken.</p>
     <div class="mu-liste">${m.reels.map((r) => `<div class="mu-reel">${esc(r.name || r.id)}</div>
-      ${(r.songs || []).map((s, i) => `<label class="mu-song${w[r.id] === s.id ? ' on' : ''}">
-        <button type="button" class="play" data-s="${esc(s.id)}">▶</button>
-        <div class="t"><b>${i + 1}. ${esc(s.titel || '')}</b> <span class="l2">– ${esc(s.kuenstler || '')}</span>
-          <div class="l2">${[s.genre, s.bpm ? s.bpm + ' BPM' : '', fmt(s.laenge)].filter(Boolean).map(esc).join(' · ')}</div>
-          ${s.warum ? `<div class="warum">${esc(s.warum)}</div>` : ''}</div>
-        <input type="radio" name="mu-${esc(r.id)}" value="${esc(s.id)}" ${w[r.id] === s.id ? 'checked' : ''}></label>`).join('')}
-      <label class="mu-song${w[r.id] === 'eigener' ? ' on' : ''}"><div class="t">Ich habe schon einen eigenen Song (in der Projektnotiz gesagt)</div>
-        <input type="radio" name="mu-${esc(r.id)}" value="eigener" ${w[r.id] === 'eigener' ? 'checked' : ''}></label>`).join('')}</div>
+      ${(r.songs || []).map((s, i) => `<div class="mu-song${w[r.id] === s.id ? ' on' : ''}" data-s="${esc(s.id)}">
+        <label class="mu-kopf"><input type="radio" name="mu-${esc(r.id)}" value="${esc(s.id)}" ${w[r.id] === s.id ? 'checked' : ''}>
+          <div class="t"><b>${i + 1}. ${esc(s.titel || '')}</b> <span class="l2">– ${esc(s.kuenstler || '')}</span>
+            <div class="l2">${[s.genre, s.bpm ? s.bpm + ' BPM' : '', fmt(s.laenge)].filter(Boolean).map(esc).join(' · ')}</div>
+            ${s.warum ? `<div class="warum">${esc(s.warum)}</div>` : ''}</div></label>
+        <div class="mu-player"><button type="button" class="play" data-s="${esc(s.id)}">▶</button>
+          <input type="range" class="mu-pos" min="0" max="1000" value="0" step="1" data-s="${esc(s.id)}" aria-label="Position">
+          <span class="mu-zeit" data-s="${esc(s.id)}">0:00</span>
+          <button type="button" class="mu-rec" data-s="${esc(s.id)}" title="Sprachnotiz zu diesem Song">🎙</button></div>
+        <div class="mu-notizen" data-s="${esc(s.id)}">${muNotizHtml(s.id)}</div></div>`).join('')}
+      <label class="mu-song mu-eigen${w[r.id] === 'eigener' ? ' on' : ''}"><input type="radio" name="mu-${esc(r.id)}" value="eigener" ${w[r.id] === 'eigener' ? 'checked' : ''}>
+        <div class="t">Ich habe schon einen eigenen Song (in der Projektnotiz gesagt)</div></label>`).join('')}</div>
     <input type="text" id="muNotiz" placeholder="Anmerkung zur Musik (optional)" value="${esc(m.notiz || '')}">
-    <div class="row"><span class="grow"></span><button id="muZu">Schließen</button><button id="muSenden" class="primary">Auswahl senden</button></div>`, (b) => {
-    b.querySelectorAll('button.play').forEach((x) => x.onclick = (e) => {
-      e.preventDefault();
-      const an = muAudio && muAudio._s === x.dataset.s;
-      muStop(); if (an) return;
-      muAudio = new Audio(`${m.link.url}/v1/musik/probe?k=${encodeURIComponent(m.link.key)}&s=${encodeURIComponent(x.dataset.s)}`);
-      muAudio._s = x.dataset.s; x.textContent = '❚❚';
-      muAudio.onended = () => muStop();
+    <div class="row"><span class="grow"></span><button id="muZu">Schließen</button><button id="muSenden" class="primary">Senden</button></div>`, (b) => {
+    const el = (sel, sid) => b.querySelector(`${sel}[data-s="${CSS.escape(sid)}"]`);
+    const anzeigen = () => {
+      if (!muAudio) return;
+      const sid = muAudio._s, d = muAudio.duration, t = muAudio.currentTime;
+      const pos = el('.mu-pos', sid), z = el('.mu-zeit', sid);
+      if (pos && !muZieht && Number.isFinite(d) && d > 0) pos.value = Math.round((t / d) * 1000);
+      if (z) z.textContent = `${muZeit(t)} / ${muZeit(d)}`;
+    };
+    // Hörprobe einmal ganz laden und als Blob abspielen – nur so kann man spulen (der Briefkasten liefert keine Range-Abrufe)
+    const starten = async (sid, abAnteil) => {
+      muStop();
+      const knopf = el('.mu-player button.play', sid); knopf.textContent = '…';
+      let url = muProben.get(sid);
+      if (!url) {
+        try {
+          const r = await fetch(`${m.link.url}/v1/musik/probe?k=${encodeURIComponent(m.link.key)}&s=${encodeURIComponent(sid)}`);
+          if (!r.ok) throw new Error(r.status);
+          url = URL.createObjectURL(await r.blob()); muProben.set(sid, url);
+        } catch { knopf.textContent = '▶'; toast('Hörprobe nicht ladbar – Internet?'); return; }
+      }
+      muAudio = new Audio(url);
+      muAudio._s = sid; muAudio.preload = 'auto';
+      muAudio.ontimeupdate = anzeigen; muAudio.onloadedmetadata = () => { if (abAnteil != null && Number.isFinite(muAudio.duration)) muAudio.currentTime = abAnteil * muAudio.duration; anzeigen(); };
+      muAudio.onended = () => { const p = el('.mu-pos', sid); if (p) p.value = 0; muStop(); };
+      el('.mu-player button.play', sid).textContent = '❚❚';
       muAudio.play().catch(() => { muStop(); toast('Hörprobe nicht ladbar – Internet?'); });
-      log('musik-probe', { s: x.dataset.s });
+      log('musik-probe', { s: sid });
+    };
+    b.querySelectorAll('.mu-player button.play').forEach((x) => x.onclick = () => {
+      const sid = x.dataset.s;
+      if (muAudio && muAudio._s === sid) { if (muAudio.paused) { muAudio.play(); x.textContent = '❚❚'; } else { muAudio.pause(); x.textContent = '▶'; } return; }
+      starten(sid, null);
+    });
+    b.querySelectorAll('.mu-pos').forEach((x) => {
+      x.addEventListener('pointerdown', () => { muZieht = true; });
+      x.addEventListener('input', () => {
+        const sid = x.dataset.s;
+        if (muAudio && muAudio._s === sid && Number.isFinite(muAudio.duration)) { muAudio.currentTime = (x.value / 1000) * muAudio.duration; anzeigen(); }
+        else { const z = el('.mu-zeit', sid); if (z) z.textContent = `${Math.round(x.value / 10)} %`; }
+      });
+      x.addEventListener('change', () => {
+        muZieht = false; const sid = x.dataset.s;
+        if (!muAudio || muAudio._s !== sid) starten(sid, x.value / 1000);   // anteilig zur Länge der Hörprobe
+      });
+    });
+    b.querySelectorAll('.mu-rec').forEach((x) => x.onclick = () => muAufnahme(x.dataset.s, x, el('.mu-notizen', x.dataset.s)));
+    b.addEventListener('click', (e) => {
+      const np = e.target.closest('[data-np]'), nd = e.target.closest('[data-nd]');
+      if (np) { const [sid, i] = np.dataset.np.split('|'); playNote(muNotizenVon(sid)[+i]); }
+      if (nd) {
+        const [sid, i] = nd.dataset.nd.split('|');
+        if (!confirm('Diese Notiz löschen?')) return;
+        muNotizenSetzen(sid, muNotizenVon(sid).filter((_, k) => k !== +i)); el('.mu-notizen', sid).innerHTML = muNotizHtml(sid);
+      }
     });
     b.querySelectorAll('input[type=radio]').forEach((x) => x.onchange = () => {
       b.querySelectorAll(`input[name="${x.name}"]`).forEach((y) => y.closest('.mu-song').classList.toggle('on', y.checked));
     });
-    b.querySelector('#muZu').onclick = () => { muStop(); closeModal(); };
+    b.querySelector('#muZu').onclick = () => { if (muRec) muRec.stop(); muStop(); closeModal(); };
     b.querySelector('#muSenden').onclick = async () => {
+      if (muRec) { toast('Erst die Notiz beenden'); return; }
       const wahl = {};
       for (const r of m.reels) { const x = b.querySelector(`input[name="mu-${CSS.escape(r.id)}"]:checked`); if (x) wahl[r.id] = x.value; }
+      const runde = (S.ps.musikNotizen || {})[m.erstellt] || {}, notizen = {}, alle = [];
+      for (const [sid, liste] of Object.entries(runde)) {
+        notizen[sid] = liste.map((n) => ({ id: n.id, mime: n.mime, dur: n.dur, created: new Date(n.created).toISOString() }));
+        alle.push(...liste.map((n) => ({ id: n.id, mime: n.mime })));
+      }
+      const text = b.querySelector('#muNotiz').value.trim();
+      if (!Object.keys(wahl).length && !alle.length && !text) { toast('Wähl einen Song oder nimm eine Notiz auf'); return; }
       const fehlt = m.reels.filter((r) => !wahl[r.id]).map((r) => r.name || r.id);
-      if (!Object.keys(wahl).length) { toast('Bitte je Reel einen Song wählen'); return; }
-      if (fehlt.length && !confirm(`Für ${fehlt.join(', ')} ist noch nichts gewählt. Trotzdem senden?`)) return;
+      if (Object.keys(wahl).length && fehlt.length && !confirm(`Für ${fehlt.join(', ')} ist noch nichts gewählt. Trotzdem senden?`)) return;
+      const knopf = b.querySelector('#muSenden'); knopf.disabled = true; knopf.textContent = 'Senden …';
       try {
-        const r = await fetch(`${m.link.url}/v1/musik/wahl?k=${encodeURIComponent(m.link.key)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ wahl, notiz: b.querySelector('#muNotiz').value }) });
+        if (alle.length) {
+          const res = await bkNotizenHoch(m.link, alle, true);
+          if (res !== 'ok') { toast(res === 'netz' ? 'Kein Internet – bitte später nochmal senden' : res, 4500); knopf.disabled = false; knopf.textContent = 'Senden'; return; }
+        }
+        const r = await fetch(`${m.link.url}/v1/musik/wahl?k=${encodeURIComponent(m.link.key)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ wahl, notiz: text, notizen }) });
         const j = await r.json().catch(() => ({}));
-        if (!r.ok || !j.ok) { toast('Nicht gesendet: ' + (j.fehler || r.status), 4000); return; }
-        log('musik-wahl', { n: Object.keys(wahl).length });
-        muStop(); closeModal(); toast('Danke! Deine Musikwahl ist bei Blue Tacit ✓', 3000); muPruefen(false);
-      } catch { toast('Kein Internet – bitte später nochmal senden', 4000); }
+        if (!r.ok || !j.ok) { toast('Nicht gesendet: ' + (j.fehler || r.status), 4000); knopf.disabled = false; knopf.textContent = 'Senden'; return; }
+        log('musik-wahl', { n: Object.keys(wahl).length, notizen: alle.length });
+        muStop(); closeModal(); toast('Danke! Deine Rückmeldung zur Musik ist bei Blue Tacit ✓', 3000); muPruefen(false);
+      } catch { toast('Kein Internet – bitte später nochmal senden', 4000); knopf.disabled = false; knopf.textContent = 'Senden'; }
     };
   });
 }
