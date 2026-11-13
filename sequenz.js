@@ -60,6 +60,7 @@ function seqZeichnen() {
     g.fillRect(x(t), SEQ.lineal - 6, 1, 6); g.fillText(schritt < 1 ? `${seqFmt(t)}.${Math.round((t % 1) * 10)}` : seqFmt(t), x(t) + 4, SEQ.lineal - 12);
   }
   // Bereiche als Blöcke mit Filmstreifen, Farbe der Kamera, Name + Sterne
+  const verw = typeof seqVerwendung === 'function' ? seqVerwendung() : null;   // v4.9t: grün = schon im Schnitt
   teile.forEach((p, i) => {
     const bx = x(p.t0), bw = Math.max(2, p.d * pps - 2);
     if (bx > w || bx + bw < 0) return;   // außerhalb der Ansicht
@@ -78,6 +79,12 @@ function seqZeichnen() {
       g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(bx, y0, bw, bh);
     }
     g.fillStyle = farbe; g.fillRect(bx, y0, bw, 4);
+    for (const [a, b] of (verw && verw.get(p.s.clipId)) || []) {
+      const a1 = Math.max(a, p.s.inT), b1 = Math.min(b, p.s.outT); if (b1 <= a1) continue;
+      const vx = bx + (a1 - p.s.inT) * pps, vw = Math.max(2, (b1 - a1) * pps);
+      g.fillStyle = 'rgba(48,209,88,0.32)'; g.fillRect(vx, y0, vw, bh);
+      g.fillStyle = '#30d158'; g.fillRect(vx, y0 + bh - 6, vw, 6);
+    }
     if (bw > 46) {
       g.fillStyle = '#fff'; g.font = '600 12px -apple-system, Segoe UI, sans-serif'; g.textBaseline = 'top';
       g.fillText(`${i + 1} · ${(c && c.name) || ''}`.slice(0, Math.floor(bw / 7)), bx + 6, y0 + 9);

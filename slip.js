@@ -440,7 +440,13 @@ function thumbHtml(c, t) {
   const idx = clamp(Math.floor(t / (c.spriteStep || 1)), 0, c.spriteN - 1);
   return `<span class="ts-th" style="background-image:url(${img.src});background-size:${c.spriteN * 96}px 54px;background-position:-${idx * 96}px 0"></span>`;
 }
+// v4.9t (Robert 13.11.): Tauschen wählt man in der Shortlist-Sequenz des Footage (die kennt man), die Liste bleibt als Ausweg
 function openTausch(sh) {
+  const g = tauschGrund(sh); if (g) { toast('Tauschen nicht möglich: ' + g, 3500); return; }
+  if ((S.ps.shortlist.selections || []).some((s) => s.kind === 'range' && !s.open)) { tauschUeberShortlist(sh); return; }
+  openTauschListe(sh);
+}
+function openTauschListe(sh) {
   const g = tauschGrund(sh); if (g) { toast('Tauschen nicht möglich: ' + g, 3500); return; }
   TS.sh = sh; TS.q = ''; TS.track = '';
   modal(`<h2>Shot ${+sh.nr} tauschen</h2>
@@ -493,3 +499,74 @@ function tauschPick(key) {
   closeModal(); log('tausch-wahl', { shot: sh.id, clip: opt.c.id, bereich: opt.bereich ? opt.bereich.id : null });
   startSlip(opt);
 }
+
+/* ---------- Tauschen über die Shortlist-Sequenz (v4.9t) ----------
+ * „⟲ Clip tauschen“ wechselt ins Footage mit offener Shortlist-Sequenz (an der zuletzt benutzten Stelle). Grün = Stellen, die schon im
+ * Schnitt dieser Version stecken. Abspielkopf an den gewünschten Anfang ziehen → „✓ Ab hier einsetzen“ → zurück in die Version, der
+ * Verschiebe-Streifen öffnet mit dem neuen Clip ab genau diesem Bild (Grenzen = Shortlist-Bereich, wenn lang genug). */
+let TAUSCH = null;   // {sh, verId, intern}
+async function tauschUeberShortlist(sh) {
+  if (CUT.mode) toggleCutMode(false);
+  TAUSCH = { sh, verId: S.ver.version_id, intern: true };
+  log('tausch-shortlist', { shot: sh.id });
+  await enterContext('shortlist');
+  TAUSCH.intern = false;
+  if (!reel) playShortlist(true);
+  if (!reel) { tauschEnde(); toast('Keine fertigen Shortlist-Bereiche'); return; }
+  $('tauschInfo').innerHTML = `⟲ <b>Shot ${+sh.nr}</b> tauschen · Abspielkopf an den gewünschten Anfang ziehen · <span class="ts-gruen">grün</span> = schon im Schnitt`;
+  $('tauschBar').classList.remove('hidden'); document.body.classList.add('tausch-wahl');
+  seqZeichnen();
+}
+function tauschEnde() {
+  TAUSCH = null;
+  const b = $('tauschBar'); if (b) b.classList.add('hidden');
+  document.body.classList.remove('tausch-wahl');
+  if (typeof seqZeichnen === 'function' && reel) seqZeichnen();
+}
+async function tauschZurueck(wahl) {
+  const t = TAUSCH; if (!t) return;
+  t.intern = true;
+  stopPlay();
+  await enterContext('edit', t.verId);
+  tauschEnde();
+  const sh = S.ver && S.ver.manifest.shots.find((x) => x.id === t.sh.id);
+  if (!sh) { toast('Shot nicht mehr da'); return; }
+  if (wahl === 'liste') { openTauschListe(sh); return; }
+  if (!wahl) return;
+  const c = footClip(wahl.clipId); if (!c) return;
+  const grund = clipGrund(sh, c); if (grund) { toast(`${c.name || c.id}: ${grund}`, 3500); return; }
+  const bereich = clipGrund(sh, c, wahl.lo, wahl.hi) ? null : { id: wahl.rangeId, lo: wahl.lo, hi: wahl.hi };
+  log('tausch-wahl', { shot: sh.id, clip: c.id, bereich: bereich ? bereich.id : null, ab: wahl.frame, weg: 'shortlist' });
+  startSlip({ c, srcIn: wahl.frame, bereich });
+}
+function tauschHier() {
+  if (!TAUSCH) return;
+  if (!reel) { toast('Shortlist ist zu – erst wieder öffnen oder „Liste“ nehmen'); return; }
+  const s = reel.list[reel.i], c = s && S.byId.get(s.clipId); if (!c) return;
+  const lo = Math.round(s.inT * c.fps), hi = Math.round(s.outT * c.fps);
+  const frame = clamp(Math.round((S.T - c.s) * c.fps), lo, hi);
+  tauschZurueck({ clipId: c.id, rangeId: s.id, lo, hi, frame });
+}
+// Schon im Schnitt verwendete Stellen je Footage-Clip (Sekunden im Clip), für eine Version – nach Tausch/Verschieben der neue Inhalt
+function verwendeteStellen(ver) {
+  const m = new Map(); if (!ver || !ver.manifest) return m;
+  const ev = (ver.ctx && ver.ctx.ereignisse) || [];
+  for (const sh of ver.manifest.shots || []) {
+    if (!(sh.src_fps > 0) || sh.src_out == null) continue;
+    const len = (sh.src_out - sh.src_in) / sh.src_fps;
+    let z = null; try { z = BTV.zielOf(sh, ev.filter((e) => e.shot === sh.id)); } catch { z = null; }
+    const clip = z ? z.clip : sh.clip, a = z ? z.src_in / z.src_fps : sh.src_in / sh.src_fps;
+    if (!clip) continue;
+    if (!m.has(clip)) m.set(clip, []);
+    m.get(clip).push([a, a + len]);
+  }
+  return m;
+}
+function seqVerwendung() {
+  const vs = S.ps && S.ps.versions || []; if (!vs.length) return null;
+  const ver = (TAUSCH && vs.find((v) => v.version_id === TAUSCH.verId)) || vs.find((v) => v.version_id === S.ps.activeVersion) || vs[vs.length - 1];
+  return verwendeteStellen(ver);
+}
+$('tauschHier').onclick = () => tauschHier();
+$('tauschListe').onclick = () => tauschZurueck('liste');
+$('tauschAbbr').onclick = () => tauschZurueck(null);
