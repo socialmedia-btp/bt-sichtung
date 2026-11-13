@@ -2233,8 +2233,13 @@ function muFenster() {
   const fmt = (s) => (s ? muZeit(s) : '');
   modal(`<h2>🎵 Musikvorschläge</h2>${m.hinweis ? `<p class="hint">${esc(m.hinweis)}</p>` : ''}
     ${m.gewaehlt ? `<p class="hint">✓ Deine Rückmeldung ist bei Blue Tacit angekommen (${new Date(m.gewaehlt).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}). Du kannst sie noch ändern.</p>` : ''}
-    <p class="hint">▶ anhören, am Regler spulen · 🎙 Notiz zum Song (z. B. „gefällt, aber mit Gesang“) · je Reel einen Song wählen – oder nur Notizen schicken.</p>
-    <div class="mu-liste">${m.reels.map((r) => `<div class="mu-reel">${esc(r.name || r.id)}</div>
+    <p class="hint">▶ anhören, am Regler spulen · 🎙 Notiz zum Song oder zur ganzen Auswahl · je Reel einen Song wählen – oder nur Notizen schicken.</p>
+    <div class="mu-liste">
+      <div class="mu-song mu-allg"><div class="mu-player"><div class="t"><b>🎙 Notiz zur ganzen Auswahl</b>
+        <div class="l2">z. B. „alles zu ruhig – bitte neue Vorschläge mit Gesang, eher wie …“</div></div>
+        <button type="button" class="mu-rec" data-s="_alle" title="Sprachnotiz zur ganzen Musikauswahl">🎙</button></div>
+        <div class="mu-notizen" data-s="_alle">${muNotizHtml('_alle')}</div></div>
+      ${m.reels.map((r) => `<div class="mu-reel">${esc(r.name || r.id)}</div>
       ${(r.songs || []).map((s, i) => `<div class="mu-song${w[r.id] === s.id ? ' on' : ''}" data-s="${esc(s.id)}">
         <label class="mu-kopf"><input type="radio" name="mu-${esc(r.id)}" value="${esc(s.id)}" ${w[r.id] === s.id ? 'checked' : ''}>
           <div class="t"><b>${i + 1}. ${esc(s.titel || '')}</b> <span class="l2">– ${esc(s.kuenstler || '')}</span>

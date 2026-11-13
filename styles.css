@@ -277,6 +277,8 @@ body.fs.ui-weg .ui-griff { display: block; position: fixed; left: 50%; bottom: c
 .mu-player .mu-zeit { font: 600 13px ui-monospace, Menlo, Consolas, monospace; color: var(--muted); min-width: 92px; text-align: right; }
 .mu-player .mu-rec { min-width: 46px; min-height: 46px; border-radius: 23px; font-size: 18px; }
 .mu-player .mu-rec.rec { background: var(--red); color: #fff; animation: pnPuls 1.2s ease-in-out infinite; }
+.mu-allg { border: 1px dashed #f2c14e66; }
+.mu-allg .t { flex: 1; min-width: 0; }
 .mu-notiz { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
 .mu-song.on { box-shadow: 0 0 0 2px #f2c14e; }
 .mu-song .t { flex: 1; min-width: 0; }
