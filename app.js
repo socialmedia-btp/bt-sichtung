@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9r';
+const APP_VERSION = 'v4.9s';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -533,6 +533,20 @@ async function enterContext(tab, versionId) {
   $('listTitle').textContent = isVersionView() ? 'Kommentare' : 'Shortlist';
   log('kontext', { tab: S.ps.tab, version: ver ? ver.version_id : null });
   resizeCanvas(); showFrame(true); renderSide(); save(); bkRender();
+  if (!ver) footAnsichtHerstellen();
+}
+/* Footage-Ansicht merken (v4.9s, Robert 13.11.): Wer zwischen Version und Footage wechselt, sieht beim Footage die zuletzt benutzte
+ * Ansicht wieder (Shortlist-Sequenz oder normale Spuren). Ohne gemerkte Wahl: Shortlist, sobald es eine Version gibt.
+ * S.ps.footAnsicht wird nur durch den Nutzer gesetzt (Shortlist öffnen / schließen), nicht durch den Kontextwechsel. */
+function footAnsichtHerstellen() {
+  const soll = S.ps.footAnsicht || (S.ps.versions.length ? 'shortlist' : 'normal');
+  if (soll !== 'shortlist' || reel) return;
+  const list = reelListe(0); if (!list.length) return;
+  const T = S.T, i = Math.max(0, list.findIndex((s) => { const [a, b] = selRange(s); return T >= a && T <= b; }));
+  S.curSel = list[i]; playShortlist(true);
+  const [a, b] = selRange(list[i]);
+  if (T > a && T < b) { S.T = T; showFrame(true); requestDraw(); }   // genau an der letzten Stelle weiter
+  log('footage-ansicht', { ansicht: 'shortlist', bei: i + 1 });
 }
 const GRAFIK_NAME = /Kinobalken|Bauchbinde|(^|[_\W])BB\d|Titel|Logo|Textwisch|Endcard|Untertitel|Lower.?Third|Grafik|_alpha\b/i;
 // Sichtbarer Shot je Zeitpunkt = oberste Ebene; benachbarte Stücke desselben Shots zusammengefasst (Sekunden ab Versionsbeginn)
@@ -1223,11 +1237,12 @@ let reel = null;
 function reelListe(min) {
   return sels().filter((s) => s.kind === 'range' && !s.open && (s.stars || 0) >= (min || 0)).sort((a, b) => selRange(a)[0] - selRange(b)[0]);
 }
-function playShortlist() {
+function playShortlist(auto) {
   const list = reelListe(0);
   if (!list.length) { toast('Noch keine fertige Auswahl (IN + OUT)'); return; }
   let i = list.indexOf(S.curSel); if (i < 0) i = 0;
-  reel = { list, i, min: 0 }; log('shortlist-start', { n: list.length, ab: i + 1 });
+  reel = { list, i, min: 0 }; log('shortlist-start', { n: list.length, ab: i + 1, auto: !!auto });
+  if (!auto && S.ps) { S.ps.footAnsicht = 'shortlist'; save(); }
   document.body.classList.add('reel');
   reelGo(i, 0, false);
   if (typeof seqOeffnen === 'function') seqOeffnen();
@@ -1245,7 +1260,7 @@ function reelGo(i, local, weiter) {
 }
 function reelStep() { if (reel) reelGo(reel.i, 0, true); }
 function reelMove(d) { if (!reel) return false; reelGo(clamp(reel.i + d, 0, reel.list.length - 1), 0, S.playing); return true; }
-function endReel() { if (!reel) return; log('shortlist-ende', { bei: reel.i + 1 }); reel = null; document.body.classList.remove('reel'); stopPlay(); updateReelBar(); const sw = $('seqWrap'); if (sw) sw.classList.add('hidden'); resizeCanvas(); }
+function endReel(nutzer) { if (nutzer && S.ps) { S.ps.footAnsicht = 'normal'; save(); } if (!reel) return; log('shortlist-ende', { bei: reel.i + 1 }); reel = null; document.body.classList.remove('reel'); stopPlay(); updateReelBar(); const sw = $('seqWrap'); if (sw) sw.classList.add('hidden'); resizeCanvas(); }
 function updateReelBar() {
   const el = $('reelBar'); if (!el) return;
   if (!reel) { el.classList.add('hidden'); return; }
@@ -2580,7 +2595,7 @@ const ACT = {
   cutstop: () => stopCutRec(),
   cutrec: () => startCutCountdown(),
   cutnotiz: () => cutKommentar(),
-  reel: () => (reel ? endReel() : playShortlist()),
+  reel: () => (reel ? endReel(true) : playShortlist()),
   more: () => document.body.classList.toggle('fs-open'),
 };
 function updateMute() { document.querySelectorAll('[data-act=mute]').forEach((b) => { b.textContent = S.muted ? '🔇' : '🔊'; }); }

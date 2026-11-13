@@ -177,7 +177,7 @@ document.querySelectorAll('#seqFilter [data-min]').forEach((b) => b.addEventList
   log('sequenz-filter', { min, n: list.length });
   seqFilterZeigen(); reelGo(i, 0, false); seqZeichnen();
 }));
-$('seqZu').addEventListener('click', () => endReel());
+$('seqZu').addEventListener('click', () => endReel(true));
 
 // mitlaufen: beim Abspielen und nach jeder Änderung (Sterne, Notizen) neu zeichnen
 const _seqDrawOrig = draw;
