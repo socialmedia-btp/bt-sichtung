@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9t';
+const APP_VERSION = 'v4.9u';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -1051,15 +1051,35 @@ function effectiveCuts(takes = S.state.takes) {
  * mit cut: true (Text, Sprachnotiz, ＋ Anhang wie jeder Kommentar); in der Liste und in der Auswertung zuerst und als „Vorrang“. */
 function cutKommentar() {
   if (CUT.rec || CUT.countdown) { toast('Erst ■ stoppen, dann den Cut kommentieren'); return; }
+  const tk = gewaehlterTake();
+  if (tk) {   // gewählter Take → Kommentar zum ganzen Take (v4.9u)
+    stopPlay(); const m = takeKommentar(tk, true);
+    log('take-kommentar', { take: tk.id }); S.curSel = m; changed();
+    setTimeout(() => { const i = $('selText'); if (i) { i.scrollIntoView({ block: 'nearest' }); i.focus(); } }, 60);
+    return;
+  }
   const cuts = effectiveCuts();
   if (!cuts.length) { toast('Noch kein Cut – erst ✂ tippen'); return; }
   stopPlay();
   const c = cuts.reduce((a, b) => (Math.abs(b.t - S.T) < Math.abs(a.t - S.T) ? b : a));
-  let m = sels().find((x) => x.cut && Math.abs(x.t - c.t) < 0.02);
+  let m = sels().find((x) => x.cut && !x.take && Math.abs(x.t - c.t) < 0.02);
   if (!m) { m = { id: uid(), kind: 'marker', cut: true, t: c.t, stars: 0, text: '', notes: [], created: Date.now() }; sels().push(m); }
   log('cut-kommentar', { pos: +c.t.toFixed(3), neu: !m.text && !m.notes.length });
   S.T = c.t; S.curSel = m; showFrame(true); changed();
   setTimeout(() => { const i = $('selText'); if (i) { i.scrollIntoView({ block: 'nearest' }); i.focus(); } }, 60);
+}
+/* Take kommentieren (v4.9u, Robert 14.11.): Take in der Zeitleiste antippen → 🎙 (oder 💬) = Kommentar zum ganzen Take.
+ * Technisch ein Marker mit cut: true + take: <Take-ID> am Take-Anfang (einer je Take); Vorrang wie Cut-Kommentare. */
+const gewaehlterTake = () => (S.selTake && (S.state.takes || []).find((x) => x.id === S.selTake)) || null;
+function takeKommentar(tk, create) {
+  let m = sels().find((x) => x.kind === 'marker' && x.take === tk.id);
+  if (!m && create) { m = { id: uid(), kind: 'marker', cut: true, take: tk.id, t: tk.start, stars: 0, text: '', notes: [], created: Date.now() }; sels().push(m); }
+  return m || null;
+}
+function takeName(id) {
+  const tk = (S.state.takes || []).find((x) => x.id === id);
+  if (!tk) return '✂ Take (gelöscht) · Vorrang';
+  return tk.single ? `✂ Einzel-Cuts (${tk.cuts.length}) · Vorrang` : `✂ Take ${clock(tk.start)}–${clock(tk.end)} · ${tk.cuts.length} Cuts · Vorrang`;
 }
 function deleteTake(id) { S.state.takes = S.state.takes.filter((x) => x.id !== id); S.selTake = null; log('take-geloescht', { id }); changed(); }
 
@@ -1098,7 +1118,7 @@ function nudge(s, which, frames) {
 }
 function jumpTo(s) {
   stopPlay();
-  S.curSel = s;
+  S.curSel = s; S.selTake = s.take || null;
   if (s.kind === 'range') { S.activeTrack = s.track; S.T = S.byId.get(s.clipId).s + s.inT; }
   else S.T = s.t;
   showFrame(true); changed();
@@ -1111,6 +1131,7 @@ function selLabel(s) {
     const sh = S.ver.manifest.shots.find((x) => x.id === s.shot);
     return { dot: '#4c9aff', l1: `💬 Shot ${sh ? sh.nr : '?'} · ${sh ? shotName(sh) : ''}`, l2: s.text || '' };
   }
+  if (s.kind === 'marker' && s.take) return { dot: '#f2c14e', l1: takeName(s.take), l2: s.text || '' };
   if (s.kind === 'marker' && s.cut) return { dot: '#f2c14e', l1: `✂ Cut ${clock(s.t)} · Vorrang`, l2: s.text || '' };
   if (s.kind === 'marker') return { dot: '#fff', l1: `⚑ Marker ${clock(s.t)}`, l2: s.text || '' };
   const c = S.byId.get(s.clipId); const tr = trackOf(s.track);
@@ -1157,9 +1178,10 @@ function renderCurrent() {
       ${tempoHtml(s.tempo, c.fps)}`;
   }
   h += `<div class="card-row stars">${[1, 2, 3].map((n) => `<button data-k="star${n}" class="${s.stars >= n ? 'on' : ''}">★</button>`).join('')}</div>
-    ${s.cut ? '<div class="hint">Kommentar zu diesem Schnitt – hat Vorrang vor den anderen Kommentaren an dieser Stelle.</div>' : ''}
-    <div class="txt-anh"><input type="text" id="selText" placeholder="${s.cut ? 'Was soll an diesem Schnitt passieren?' : 'Notiz (optional)'}" value="${esc(s.text)}">${anhKnopf('data-k="anh"')}</div>
-    ${s.cut ? '<button data-k="cutrec" class="rec-scene">🎙 Sprachnotiz zum Cut</button>' : ''}
+    ${s.take ? '<div class="hint">Kommentar zu diesem ganzen Take – hat Vorrang vor den anderen Kommentaren in diesem Bereich.</div>'
+      : s.cut ? '<div class="hint">Kommentar zu diesem Schnitt – hat Vorrang vor den anderen Kommentaren an dieser Stelle.</div>' : ''}
+    <div class="txt-anh"><input type="text" id="selText" placeholder="${s.take ? 'Was soll mit diesem Take passieren?' : s.cut ? 'Was soll an diesem Schnitt passieren?' : 'Notiz (optional)'}" value="${esc(s.text)}">${anhKnopf('data-k="anh"')}</div>
+    ${s.cut ? `<button data-k="cutrec" class="rec-scene">🎙 Sprachnotiz zum ${s.take ? 'Take' : 'Cut'}</button>` : ''}
     <div class="notes">${notizZeilen(s.notes, (i) => `data-k="pn${i}"`, (i) => `data-k="dn${i}"`)}</div>`;
   box.innerHTML = h;
   tempoBind(box, () => (sels().includes(s) ? s : null), () => S.byId.get(s.clipId).fps);
@@ -1174,7 +1196,7 @@ function renderCurrent() {
     if (k === 'out+1') return nudge(s, 'out', 1);
     if (k === 'playsel') return playSelection(s);
     if (k === 'anh') return anhaengen(() => (sels().includes(s) ? s : null));
-    if (k === 'cutrec') { stopPlay(); S.T = s.t; showFrame(true); return toggleRec(); }
+    if (k === 'cutrec') { stopPlay(); S.selTake = s.take || null; S.T = s.t; showFrame(true); return toggleRec(); }
     if (k.startsWith('star')) { const n = +k.slice(4); s.stars = s.stars === n ? 0 : n; return changed(); }
     if (k.startsWith('pn')) return playNote(s.notes[+k.slice(2)]);
     if (k.startsWith('dn')) { const n = s.notes[+k.slice(2)]; s.notes = s.notes.filter((x) => x !== n); return changed(); }
@@ -1307,11 +1329,13 @@ async function toggleRec(ziel) {
   recStarting = true;
   stopPlay();
   const ctxObj = S.state; // Ziel-Kontext vor dem ersten await festhalten (F01)
-  let s = ziel !== 'szene' && amZeiger(S.curSel) ? S.curSel : null;
+  const tk = ziel !== 'szene' && !CUT.rec && !CUT.countdown ? gewaehlterTake() : null;   // gewählter Take hat Vorrang (v4.9u)
+  let s = !tk && ziel !== 'szene' && amZeiger(S.curSel) ? S.curSel : null;
   const mime = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm'].find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m));
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
   catch (e) { recStarting = false; log('mikro-fehler', { name: e.name, msg: e.message }); toast('Kein Mikrofonzugriff – in den Einstellungen erlauben'); return; }
+  if (tk) { s = takeKommentar(tk, true); toast('🎙 Kommentar zum gewählten Take', 1500); }
   if (!s && ziel === 'szene' && S.ver && shotNow()) s = shotComment(shotNow().shot, true); // Kommentar zur Szene am Abspielzeiger
   if (!s) s = selAtPlayhead();
   if (!s) { s = addMarker(); toast('Notiz als Marker an dieser Stelle'); }
@@ -1333,6 +1357,7 @@ async function toggleRec(ziel) {
     const list = target.ctx.selections;
     let dest = list.find((x) => x.id === target.selId);
     if (!dest) { dest = { id: uid(), kind: 'marker', t: target.t, stars: 0, text: '', notes: [], created: Date.now() }; list.push(dest); toast('Auswahl war weg → Notiz als Marker gespeichert'); }
+    if (dest.take && S.state === target.ctx) S.selTake = dest.take;
     dest.notes.push(n);
     if (S.state === target.ctx && !dest.shot) S.curSel = dest;
     log('notiz-ende', { s: n.dur.toFixed(1), zu: dest.id });
@@ -1646,6 +1671,7 @@ function draw() {
       const yy = G.ty(k), x0 = xOf(tk.start), x1 = xOf(tk.end), sel = tk.id === S.selTake;
       ctx.fillStyle = sel ? 'rgba(242,193,78,0.25)' : 'rgba(255,255,255,0.07)'; ctx.fillRect(x0, yy + 1, Math.max(2, x1 - x0), TAKE_H - 3);
       if (tk.live) { ctx.strokeStyle = '#ff453a'; ctx.lineWidth = 2; ctx.strokeRect(x0, yy + 1, Math.max(2, x1 - x0), TAKE_H - 3); }
+      if (!tk.live && takeKommentar(tk)) { ctx.fillStyle = '#f2c14e'; ctx.font = '700 11px sans-serif'; ctx.fillText('💬', Math.max(x0, HEAD) + 3, yy + 14); }
       for (const ct of tk.cuts) {
         const x = xOf(ct); const on = tk.live || eff.has(tk.id + ':' + ct);
         ctx.fillStyle = on ? '#f2c14e' : 'rgba(242,193,78,0.28)'; ctx.fillRect(x - 1.25, yy + 2, 2.5, TAKE_H - 5);
@@ -1914,7 +1940,7 @@ function endPointer(e) {
   viewLock = null;
   if (g.lpDone) { g = null; requestDraw(); return; }
   if (!g.moved && !g.fine && g.type === 'comment') {
-    if (g.marker) { S.curSel = g.marker; log('kommentar-gewaehlt', { id: g.marker.id }); renderSide(); }
+    if (g.marker) { S.curSel = g.marker; S.selTake = g.marker.take || null; log('kommentar-gewaehlt', { id: g.marker.id }); renderSide(); }
     else if (S.ver && shotNow()) { S.curSel = null; log('kommentar-szene', { pos: +S.T.toFixed(3) }); toggleRec('szene'); }
     else { S.curSel = addMarker(); log('kommentar-neu', { pos: +S.T.toFixed(3) }); toggleRec(); }
     g = null; requestDraw(); return;
@@ -1925,14 +1951,20 @@ function endPointer(e) {
   }
   if (!g.moved && !g.fine && (g.type === 'take' || g.type === 'takex')) {
     if (g.type === 'takex') deleteTake(g.take.id);
-    else { S.selTake = S.selTake === g.take.id ? null : g.take.id; log('take-gewaehlt', { id: S.selTake }); }
+    else {
+      S.selTake = S.selTake === g.take.id ? null : g.take.id; log('take-gewaehlt', { id: S.selTake });
+      const m = S.selTake && takeKommentar(g.take);
+      if (m) S.curSel = m; else if (S.curSel && S.curSel.take) S.curSel = null;
+      if (S.selTake && !m) toast('Take gewählt · 🎙 = Sprachkommentar · 💬 = Text · ✕ = löschen', 2500);
+      renderSide();
+    }
     g = null; requestDraw(); return;
   }
   if (!g.moved && !g.fine) {
     if (g.type === 'head' && g.track && !isVersionView()) offsetDialog(g.track);
-    else if (g.type === 'sel' || g.type === 'handle') { S.curSel = g.s; S.activeTrack = g.track.id; }
+    else if (g.type === 'sel' || g.type === 'handle') { S.curSel = g.s; S.activeTrack = g.track.id; S.selTake = null; }
     else if (g.type === 'lane') {
-      S.activeTrack = g.track.id;
+      S.activeTrack = g.track.id; S.selTake = null;
       // Tippen auf einen Clip: Playhead dorthin
       const r = rOfX(g.x0); const c = clipAt(g.track.id, r);
       if (c) S.T = r;
@@ -1992,6 +2024,8 @@ async function exportCtx(ctx, view, probleme, wo) {
   const byId = new Map(view.clips.map((c) => [c.id, c]));
   const at = (s) => (s.kind === 'marker' ? s.t : (byId.get(s.clipId) ? byId.get(s.clipId).s + s.inT : 0));
   const list = [...ctx.selections].sort((a, b) => at(a) - at(b));
+  const tkClock = (x) => (view.isVersion ? clock(+(x - view.base).toFixed(3), view.fps) : clock(x));
+  const takeFeld = (id) => { const tk = (ctx.takes || []).find((x) => x.id === id); return { take: id, take_clock: tk ? `${tkClock(tk.start)}–${tkClock(tk.end)}` : null, take_cuts: tk ? tk.cuts.length : 0 }; };
   const rel = (x) => +(x - view.base).toFixed(3);
   const selections = []; let missingAudio = 0;
   for (const s of list) {
@@ -2001,7 +2035,7 @@ async function exportCtx(ctx, view, probleme, wo) {
       if (b) notes.push({ id: n.id, mime: n.mime, dur: n.dur, ...anhFelder(n), created: new Date(n.created).toISOString(), data: await blobToB64(b) });
       else missingAudio++;
     }
-    const base = { id: s.id, kind: s.kind, stars: s.stars, text: s.text, created: new Date(s.created).toISOString(), notes, ...(s.shot ? { shot: s.shot } : {}), ...(s.cut ? { cut: true } : {}), ...(s.tempo ? { tempo: s.tempo, tempo_info: s.tempoInfo || null } : {}) };
+    const base = { id: s.id, kind: s.kind, stars: s.stars, text: s.text, created: new Date(s.created).toISOString(), notes, ...(s.shot ? { shot: s.shot } : {}), ...(s.cut ? { cut: true } : {}), ...(s.take ? takeFeld(s.take) : {}), ...(s.tempo ? { tempo: s.tempo, tempo_info: s.tempoInfo || null } : {}) };
     if (s.kind === 'marker') {
       selections.push(view.isVersion ? { ...base, t: rel(s.t), frame: Math.round(rel(s.t) * view.fps), clock: clock(rel(s.t), view.fps) }
         : { ...base, clock: clock(s.t), t: s.t });
@@ -2179,7 +2213,7 @@ async function importSels(arr, clipIdOf) {
       notes.push({ id: n.id, mime: n.mime, dur: n.dur, ...anhFelder(n), created: Date.parse(n.created) });
     }
     const base = { id: x.id, kind: x.kind, stars: x.stars || 0, text: x.text || '', notes, created: Date.parse(x.created), ...(x.tempo ? { tempo: x.tempo, tempoInfo: x.tempo_info || null } : {}) };
-    if (x.kind === 'marker') { list.push({ ...base, t: x.t, ...(x.shot ? { shot: x.shot } : {}), ...(x.cut ? { cut: true } : {}) }); continue; }
+    if (x.kind === 'marker') { list.push({ ...base, t: x.t, ...(x.shot ? { shot: x.shot } : {}), ...(x.cut ? { cut: true } : {}), ...(x.take ? { take: x.take } : {}) }); continue; }
     const cid = clipIdOf(x);
     if (cid) list.push({ ...base, clipId: cid, track: x.track, inT: x.in, outT: x.out, open: !!x.open });
     else skipped++;
