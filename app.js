@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9i';
+const APP_VERSION = 'v4.9j';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -2149,6 +2149,88 @@ async function pnAufnahme() {
 }
 $('btnProjNotiz').onclick = () => (pnRec ? pnRec.stop() : pnFenster());
 
+/* ---------- Musikvorschläge (Robert 13.11.) ----------
+ * Nach dem Senden sucht Claude je Reel 5–10 Artlist-Songs und legt sie im Briefkasten für genau diesen Link ab. Die App holt sie
+ * (beim Öffnen, wenn sie wieder sichtbar wird, alle 3 min), meldet neue Vorschläge per Fenster, spielt Hörproben und schickt die Wahl
+ * zurück (POST /v1/musik/wahl) – der Wächter auf Roberts PC lädt dann den Song und baut weiter. */
+let muDaten = null, muAudio = null, muLaeuft = false;
+async function muPruefen(zeigen) {
+  if (!S.proj || muLaeuft) return;
+  muLaeuft = true;
+  try {
+    const link = await bkLink(await projPid(S.proj)); if (!link) { $('btnMusik').classList.add('hidden'); return; }
+    const r = await fetch(`${link.url}/v1/musik?k=${encodeURIComponent(link.key)}`); if (!r.ok) return;
+    const j = await r.json(); muDaten = j.musik ? { ...j.musik, link } : null;
+    const b = $('btnMusik');
+    b.classList.toggle('hidden', !muDaten);
+    if (!muDaten) return;
+    const neu = !muDaten.wahl && S.ps && S.ps.musikGesehen !== muDaten.erstellt;
+    b.classList.toggle('neu', neu);
+    b.textContent = muDaten.wahl ? '🎵 ✓' : '🎵';
+    if (neu && (zeigen || $('modal').classList.contains('hidden'))) {
+      log('musik-neu', { reels: muDaten.reels.length });
+      modal(`<h2>🎵 Deine Musikvorschläge sind da</h2><p>Blue Tacit hat für <b>${muDaten.reels.length} Reel${muDaten.reels.length > 1 ? 's' : ''}</b>
+        Songs herausgesucht. Hör rein und wähl je Reel einen aus.</p>
+        <div class="row"><span class="grow"></span><button id="muSpaeter">Später</button><button id="muJetzt" class="primary">Anhören</button></div>`, (m) => {
+        m.querySelector('#muSpaeter').onclick = () => { S.ps.musikGesehen = muDaten.erstellt; save(); b.classList.remove('neu'); closeModal(); };
+        m.querySelector('#muJetzt').onclick = () => muFenster();
+      });
+    }
+  } catch { /* offline – später nochmal */ } finally { muLaeuft = false; }
+}
+function muStop() { if (muAudio) { muAudio.pause(); muAudio = null; } document.querySelectorAll('.mu-song button.play').forEach((x) => { x.textContent = '▶'; }); }
+function muFenster() {
+  if (!muDaten) return;
+  S.ps.musikGesehen = muDaten.erstellt; save(); $('btnMusik').classList.remove('neu');
+  const m = muDaten, w = m.wahl || {};
+  const fmt = (s) => (s ? `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}` : '');
+  modal(`<h2>🎵 Musikvorschläge</h2>${m.hinweis ? `<p class="hint">${esc(m.hinweis)}</p>` : ''}
+    ${m.wahl ? `<p class="hint">✓ Deine Wahl ist bei Blue Tacit angekommen${m.gewaehlt ? ' (' + new Date(m.gewaehlt).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) + ')' : ''}. Du kannst sie noch ändern.</p>` : ''}
+    <div class="mu-liste">${m.reels.map((r) => `<div class="mu-reel">${esc(r.name || r.id)}</div>
+      ${(r.songs || []).map((s, i) => `<label class="mu-song${w[r.id] === s.id ? ' on' : ''}">
+        <button type="button" class="play" data-s="${esc(s.id)}">▶</button>
+        <div class="t"><b>${i + 1}. ${esc(s.titel || '')}</b> <span class="l2">– ${esc(s.kuenstler || '')}</span>
+          <div class="l2">${[s.genre, s.bpm ? s.bpm + ' BPM' : '', fmt(s.laenge)].filter(Boolean).map(esc).join(' · ')}</div>
+          ${s.warum ? `<div class="warum">${esc(s.warum)}</div>` : ''}</div>
+        <input type="radio" name="mu-${esc(r.id)}" value="${esc(s.id)}" ${w[r.id] === s.id ? 'checked' : ''}></label>`).join('')}
+      <label class="mu-song${w[r.id] === 'eigener' ? ' on' : ''}"><div class="t">Ich habe schon einen eigenen Song (in der Projektnotiz gesagt)</div>
+        <input type="radio" name="mu-${esc(r.id)}" value="eigener" ${w[r.id] === 'eigener' ? 'checked' : ''}></label>`).join('')}</div>
+    <input type="text" id="muNotiz" placeholder="Anmerkung zur Musik (optional)" value="${esc(m.notiz || '')}">
+    <div class="row"><span class="grow"></span><button id="muZu">Schließen</button><button id="muSenden" class="primary">Auswahl senden</button></div>`, (b) => {
+    b.querySelectorAll('button.play').forEach((x) => x.onclick = (e) => {
+      e.preventDefault();
+      const an = muAudio && muAudio._s === x.dataset.s;
+      muStop(); if (an) return;
+      muAudio = new Audio(`${m.link.url}/v1/musik/probe?k=${encodeURIComponent(m.link.key)}&s=${encodeURIComponent(x.dataset.s)}`);
+      muAudio._s = x.dataset.s; x.textContent = '❚❚';
+      muAudio.onended = () => muStop();
+      muAudio.play().catch(() => { muStop(); toast('Hörprobe nicht ladbar – Internet?'); });
+      log('musik-probe', { s: x.dataset.s });
+    });
+    b.querySelectorAll('input[type=radio]').forEach((x) => x.onchange = () => {
+      b.querySelectorAll(`input[name="${x.name}"]`).forEach((y) => y.closest('.mu-song').classList.toggle('on', y.checked));
+    });
+    b.querySelector('#muZu').onclick = () => { muStop(); closeModal(); };
+    b.querySelector('#muSenden').onclick = async () => {
+      const wahl = {};
+      for (const r of m.reels) { const x = b.querySelector(`input[name="mu-${CSS.escape(r.id)}"]:checked`); if (x) wahl[r.id] = x.value; }
+      const fehlt = m.reels.filter((r) => !wahl[r.id]).map((r) => r.name || r.id);
+      if (!Object.keys(wahl).length) { toast('Bitte je Reel einen Song wählen'); return; }
+      if (fehlt.length && !confirm(`Für ${fehlt.join(', ')} ist noch nichts gewählt. Trotzdem senden?`)) return;
+      try {
+        const r = await fetch(`${m.link.url}/v1/musik/wahl?k=${encodeURIComponent(m.link.key)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ wahl, notiz: b.querySelector('#muNotiz').value }) });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.ok) { toast('Nicht gesendet: ' + (j.fehler || r.status), 4000); return; }
+        log('musik-wahl', { n: Object.keys(wahl).length });
+        muStop(); closeModal(); toast('Danke! Deine Musikwahl ist bei Blue Tacit ✓', 3000); muPruefen(false);
+      } catch { toast('Kein Internet – bitte später nochmal senden', 4000); }
+    };
+  });
+}
+$('btnMusik').onclick = () => muFenster();
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') muPruefen(false); });
+setInterval(() => { if (document.visibilityState === 'visible') muPruefen(false); }, 180000);
+
 /* ---------- Hilfe ---------- */
 function help() {
   modal(`<h2>So geht’s</h2><ul>
@@ -2646,6 +2728,7 @@ async function bkRender() {
   const gesendet = S.ps && (S.ps.bkGen || 0) >= (S.ps.gen || 0) && (S.ps.gen || 0) > 0;
   b.textContent = fehler ? 'Senden ⚠' : wartet ? 'Senden ⏳' : gesendet ? 'Gesendet ✓' : 'Senden';
   b.title = fehler ? 'Ein Stand wurde abgelehnt – erneut senden oder als Datei speichern' : wartet ? 'Wartet auf Internet – wird automatisch nachgesendet' : `An Blue Tacit senden (${link.name})`;
+  muPruefen(false);   // Musikvorschläge für diesen Link?
 }
 // Ein Stand-JSON an den Briefkasten (60 s Zeitgrenze). Rückgabe: 'ok' | 'netz' (→ später nochmal) | Fehlertext (endgültig)
 async function bkPost(link, body) {
