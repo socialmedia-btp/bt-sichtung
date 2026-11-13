@@ -1,6 +1,6 @@
 // App-Hülle offline verfügbar machen. Footage liegt in IndexedDB, nicht im Cache.
 // Bei jeder App-Änderung VERSION hochzählen, damit Geräte die neue Fassung laden.
-const VERSION = 'framepoint-v49l';
+const VERSION = 'framepoint-v49m';
 const FILES = ['./', 'index.html', 'styles.css', 'app.js', 'vertrag.js', 'slip.js', 'sequenz.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'hero.jpg', 'logo.png'];
 
 self.addEventListener('install', (e) => {
@@ -11,13 +11,28 @@ self.addEventListener('activate', (e) => {
     .then(() => self.clients.claim()));
 });
 // Push vom Briefkasten (ohne Inhalt): Benachrichtigung zeigen; Tippen öffnet Framepoint (Robert 13.11.)
+// Der Push hat keinen Inhalt – den Text (neue Version / Musikvorschläge) holt der Service Worker zu seinem Abo beim Briefkasten.
+const BK_URL = 'https://framepoint-briefkasten.bluetacit.workers.dev';
+async function pushText() {
+  try {
+    const abo = await self.registration.pushManager.getSubscription();
+    if (!abo) return null;
+    const h = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(abo.endpoint)))].map((b) => b.toString(16).padStart(2, '0')).join('');
+    const r = await fetch(`${BK_URL}/v1/push/nachricht?e=${h}`, { cache: 'no-store' });
+    const j = await r.json();
+    return j && j.nachricht;
+  } catch { return null; }
+}
 self.addEventListener('push', (e) => {
-  let d = {};
-  try { d = e.data ? e.data.json() : {}; } catch { d = {}; }
-  e.waitUntil(self.registration.showNotification(d.titel || 'Framepoint', {
-    body: d.text || '🎵 Deine Musikvorschläge sind da – tippen, reinhören und auswählen.',
-    icon: 'icon-192.png', badge: 'icon-192.png', tag: 'framepoint-musik', renotify: true, data: { url: './' },
-  }));
+  e.waitUntil((async () => {
+    let d = null;
+    try { d = e.data ? e.data.json() : null; } catch { d = null; }
+    d = d || (await pushText()) || {};
+    await self.registration.showNotification(d.titel || 'Framepoint', {
+      body: d.text || 'Neues von Blue Tacit – tippen zum Öffnen.',
+      icon: 'icon-192.png', badge: 'icon-192.png', tag: 'framepoint', renotify: true, data: { url: './' },
+    });
+  })());
 });
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();

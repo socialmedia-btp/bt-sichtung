@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9l';
+const APP_VERSION = 'v4.9m';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -262,6 +262,7 @@ async function bkLaden({ link, v }) {
     }
     if (n !== total) throw new Error(`Verbindung abgebrochen (${(n / 1e6).toFixed(0)} von ${(total / 1e6).toFixed(0)} MB) – bitte noch einmal „Laden“`);
     log('version-geladen', { export: v.export_id, mb: +(n / 1e6).toFixed(1) });
+    setTimeout(pushFragen, 3500);   // nach dem ersten Laden einmal fragen: Mitteilung bei der nächsten Version
     const base = v.datei.replace(/\.[^.]+$/, '');
     await importKundenVersion([new File(teile, v.datei, { type: 'video/mp4' }), new File([man], base + '.json', { type: 'application/json' })]);
   } catch (e) {
@@ -2260,8 +2261,8 @@ async function pushAnmelden(still) {
 function pushFragen() {
   if (!pushGeht() || Notification.permission !== 'default') return;
   try { if (localStorage.getItem('fp-push-gefragt')) return; localStorage.setItem('fp-push-gefragt', '1'); } catch { /* egal */ }
-  modal(`<h2>🔔 Bescheid bekommen?</h2><p>Sobald Blue Tacit deine Musikvorschläge fertig hat, zeigt dein iPad eine Mitteilung – auch wenn
-    Framepoint gerade zu ist.</p><div class="row"><span class="grow"></span><button id="puNein">Nein danke</button><button id="puJa" class="primary">Ja, benachrichtigen</button></div>`, (b) => {
+  modal(`<h2>🔔 Bescheid bekommen?</h2><p>Sobald Blue Tacit etwas Neues für dich hat – eine neue Version oder Musikvorschläge –, zeigt
+    dein Gerät eine Mitteilung, auch wenn Framepoint gerade zu ist.</p><div class="row"><span class="grow"></span><button id="puNein">Nein danke</button><button id="puJa" class="primary">Ja, benachrichtigen</button></div>`, (b) => {
     b.querySelector('#puNein').onclick = closeModal;
     b.querySelector('#puJa').onclick = async () => { closeModal(); await pushAnmelden(false); };
   });
