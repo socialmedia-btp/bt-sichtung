@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9n';
+const APP_VERSION = 'v4.9o';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -986,6 +986,18 @@ function singleCut(tc) {
 function startCutCountdown() {
   if (CUT.rec || CUT.countdown) return;
   stopPlay();
+  // Abspielkopf am Ende → play() täte nichts („play-ende“) und die Aufnahme liefe ins Leere: an den Anfang
+  const ende = Math.max(...S.clips.map((c) => c.s + c.dur));
+  if ((!shownClip() && !nextClipStart(S.T)) || S.T >= ende - 0.1) {
+    S.T = Math.min(...S.clips.map((c) => c.s)); showFrame(true); log('cut-countdown-anfang');
+  }
+  // iPhone/iPad: play() erst nach dem 3-2-1 liegt außerhalb des Fingertipps → Safari blockiert es (mit Ton,
+  // im Stromsparmodus sogar stumm). Darum JETZT im Tipp einmal anspielen und sofort anhalten = Video ist freigeschaltet.
+  try {
+    video.muted = S.muted;
+    const p = video.play(); video.pause();
+    if (p && p.catch) p.catch((e) => { if (e.name !== 'AbortError') log('cut-freischalten', { name: e.name }); });
+  } catch (e) { log('cut-freischalten', { name: e.name }); }
   let n = 3; const el = $('countdown'); el.textContent = n; el.classList.remove('hidden');
   log('cut-countdown', { pos: +S.T.toFixed(3) });
   CUT.countdown = setInterval(() => {
