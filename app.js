@@ -986,7 +986,7 @@ function cutTap() {
   if (CUT.countdown) return;
   if (!CUT.rec) { singleCut(cutNow()); return; }
   const tNow = cutNow(); CUT.rec.cuts.push(tNow);
-  log('cut', { pos: +tNow.toFixed(3) });
+  log('cut', { pos: +tNow.toFixed(3) }); updateUndoBtns();
   const b = $('btnCut'); b.classList.remove('hit'); void b.offsetWidth; b.classList.add('hit');
   requestDraw();
 }
@@ -1030,9 +1030,18 @@ function stopCutRec() {
   const take = { ...CUT.rec, end: S.T }; CUT.rec = null; $('cutbar').classList.remove('recording');
   stopPlay();
   if (take.end - take.start < 0.3) { toast('Aufnahme zu kurz – verworfen'); requestDraw(); return; }
-  S.state.takes.push(take); S.selTake = take.id;
+  // v4.9u (Robert 14.11.): ↶ nimmt die Cuts des Takes einzeln von hinten zurück, nicht den ganzen Take auf einmal.
+  // Dafür je Cut ein Zwischenstand in der Rückgängig-Liste: Take mit den ersten k Cuts, Ende kurz nach dem k-ten Cut
+  // (dahinter gelten wieder die älteren Cuts). Der letzte Stand ist der vollständige Take.
+  const alle = take.cuts.slice();
+  const tk = { ...take, cuts: [] }; S.state.takes.push(tk); S.selTake = take.id;
+  for (let k = 1; k < alle.length; k++) {
+    tk.cuts = alle.slice(0, k); tk.end = Math.min(take.end, alle[k - 1] + 0.05);
+    recordHistory();
+  }
+  tk.cuts = alle; tk.end = take.end;
   log('cut-take', { cuts: take.cuts.length, von: +take.start.toFixed(2), bis: +take.end.toFixed(2) });
-  changed(); toast(`${take.cuts.length} Cuts aufgenommen – Take antippen, ✕ löscht`);
+  changed(); toast(`${take.cuts.length} Cuts aufgenommen – ↶ nimmt sie einzeln zurück · Take antippen, ✕ löscht`);
 }
 function effectiveCuts(takes = S.state.takes) {
   const ev = [];
@@ -1103,10 +1112,16 @@ function restoreSnap(js) {
   S.curSel = sels().find((x) => x.id === keep) || null;
   applyOffsets(); save(); renderSide(); requestDraw(); markSaved(false); showFrame(true); updateUndoBtns();
 }
-function undo() { if (rec || recStarting) { toast('Erst die Aufnahme beenden'); return; } if (!UNDO.length) { toast('Nichts rückgängig zu machen'); return; } REDO.push(lastSnap); restoreSnap(UNDO.pop()); log('undo', { rest: UNDO.length }); toast('Rückgängig', 900); }
+function undo() {
+  if (CUT.rec) {   // v4.9u: während der Takt-Aufnahme den zuletzt getippten Cut wieder entfernen
+    if (!CUT.rec.cuts.length) { toast('Noch kein Cut in dieser Aufnahme'); return; }
+    const t = CUT.rec.cuts.pop(); log('cut-zurueck', { pos: +t.toFixed(3), rest: CUT.rec.cuts.length }); toast(`Cut ${clock(t)} zurückgenommen`, 900);
+    updateUndoBtns(); requestDraw(); return;
+  }
+  if (rec || recStarting) { toast('Erst die Aufnahme beenden'); return; } if (!UNDO.length) { toast('Nichts rückgängig zu machen'); return; } REDO.push(lastSnap); restoreSnap(UNDO.pop()); log('undo', { rest: UNDO.length }); toast('Rückgängig', 900); }
 function redo() { if (rec || recStarting || !REDO.length) return; UNDO.push(lastSnap); restoreSnap(REDO.pop()); log('redo'); toast('Wiederholt', 900); }
 function updateUndoBtns() {
-  document.querySelectorAll('[data-act=undo]').forEach((b) => { b.disabled = !UNDO.length; });
+  document.querySelectorAll('[data-act=undo]').forEach((b) => { b.disabled = !UNDO.length && !(CUT.rec && CUT.rec.cuts.length); });
   document.querySelectorAll('[data-act=redo]').forEach((b) => { b.disabled = !REDO.length; });
 }
 function nudge(s, which, frames) {
