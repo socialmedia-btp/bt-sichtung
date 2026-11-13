@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9o';
+const APP_VERSION = 'v4.9p';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -1100,7 +1100,7 @@ function renderSide() {
     const el = document.createElement('div');
     el.className = 'sel-item' + (s === S.curSel ? ' cur' : '');
     el.innerHTML = `<span class="dot" style="background:${L.dot}"></span><div class="t"><div class="l1">${esc(L.l1)}</div><div class="l2">${esc(L.l2)}</div></div>
-      <span class="st">${'★'.repeat(s.stars)}${s.notes.length ? ' 🎙' + s.notes.length : ''}</span>`;
+      <span class="st">${'★'.repeat(s.stars)}${anzSprache(s) ? ' 🎙' + anzSprache(s) : ''}${anzAnh(s) ? ' 📎' + anzAnh(s) : ''}</span>`;
     el.onclick = () => jumpTo(s);
     list.appendChild(el);
   }
@@ -1124,9 +1124,8 @@ function renderCurrent() {
         <button data-k="playsel">▶ Auswahl</button></div>`;
   }
   h += `<div class="card-row stars">${[1, 2, 3].map((n) => `<button data-k="star${n}" class="${s.stars >= n ? 'on' : ''}">★</button>`).join('')}</div>
-    <input type="text" id="selText" placeholder="Notiz (optional)" value="${esc(s.text)}">
-    <div class="notes">${s.notes.map((n, i) => `<div class="note">🎙 Sprachnotiz ${i + 1} · ${n.dur ? n.dur.toFixed(0) + ' s' : ''}
-      <button data-k="pn${i}">▶</button><button data-k="dn${i}" class="ghost danger">✕</button></div>`).join('')}</div>`;
+    <div class="txt-anh"><input type="text" id="selText" placeholder="Notiz (optional)" value="${esc(s.text)}">${anhKnopf('data-k="anh"')}</div>
+    <div class="notes">${notizZeilen(s.notes, (i) => `data-k="pn${i}"`, (i) => `data-k="dn${i}"`)}</div>`;
   box.innerHTML = h;
   box.querySelector('#selText').oninput = (e) => { s.text = e.target.value; save(); };
   box.querySelector('#selText').onchange = () => changed();
@@ -1138,6 +1137,7 @@ function renderCurrent() {
     if (k === 'out-1') return nudge(s, 'out', -1);
     if (k === 'out+1') return nudge(s, 'out', 1);
     if (k === 'playsel') return playSelection(s);
+    if (k === 'anh') return anhaengen(() => (sels().includes(s) ? s : null));
     if (k.startsWith('star')) { const n = +k.slice(4); s.stars = s.stars === n ? 0 : n; return changed(); }
     if (k.startsWith('pn')) return playNote(s.notes[+k.slice(2)]);
     if (k.startsWith('dn')) { const n = s.notes[+k.slice(2)]; s.notes = s.notes.filter((x) => x !== n); return changed(); }
@@ -1167,9 +1167,8 @@ function renderShotCard(box) {
     <div class="card-row stars">${[1, 2, 3].map((n) => `<button data-r="${n}" class="${w !== 'rot' && w >= n ? 'on' : ''}" title="${n} Stern${n > 1 ? 'e' : ''} (Taste ${n})">★</button>`).join('')}
       <button data-r="rot" class="rot${w === 'rot' ? ' on' : ''}" title="Muss auf jeden Fall raus (Taste X)">✕ Muss raus</button></div>
     <div class="hint">★ brauchbar · ★★ gut · ★★★ Favorit · <b>Muss raus</b> = darf auf keinen Fall drin bleiben (wird nur markiert). Ohne Bewertung = noch offen.</div>
-    <input type="text" id="shotText" placeholder="Kommentar zu dieser Szene" value="${esc((shotComment(sh) || {}).text || '')}">
-    <div class="notes">${((shotComment(sh) || {}).notes || []).map((n, i) => `<div class="note">🎙 Sprachnotiz ${i + 1} · ${n.dur ? n.dur.toFixed(0) + ' s' : ''}
-      <button data-pn="${i}">▶</button><button data-dn="${i}" class="ghost danger">✕</button></div>`).join('')}
+    <div class="txt-anh"><input type="text" id="shotText" placeholder="Kommentar zu dieser Szene" value="${esc((shotComment(sh) || {}).text || '')}">${anhKnopf('data-anh="1"')}</div>
+    <div class="notes">${notizZeilen((shotComment(sh) || {}).notes || [], (i) => `data-pn="${i}"`, (i) => `data-dn="${i}"`)}
       <button data-k="rec" class="rec-scene">🎙 Sprachnotiz zu dieser Szene</button></div>`;
   box.querySelectorAll('[data-r]').forEach((x) => x.onclick = () => rateShot(x.dataset.r === 'rot' ? 'rot' : +x.dataset.r));
   slipCardBind(box, sh);
@@ -1177,6 +1176,7 @@ function renderShotCard(box) {
   ti.oninput = (e) => { const m = shotComment(sh, true); m.text = e.target.value; save(); };
   ti.onchange = () => { const m = shotComment(sh); if (m && !m.text && !m.notes.length) S.state.selections = sels().filter((x) => x !== m); changed(); };
   box.querySelector('[data-k=rec]').onclick = () => toggleRec('szene');
+  box.querySelector('[data-anh]').onclick = () => anhaengen(() => shotComment(sh, true));
   box.querySelectorAll('[data-pn]').forEach((x) => x.onclick = () => playNote(shotComment(sh).notes[+x.dataset.pn]));
   box.querySelectorAll('[data-dn]').forEach((x) => x.onclick = () => { const m = shotComment(sh); m.notes = m.notes.filter((_, i) => i !== +x.dataset.dn); changed(); });
 }
@@ -1303,9 +1303,79 @@ async function toggleRec(ziel) {
 }
 let noteAudio = null;
 async function playNote(n) {
+  if (istAnhang(n)) return anhZeigen(n);
   const b = await DB.get('notes', n.id); if (!b) return;
   if (noteAudio) noteAudio.pause();
   noteAudio = new Audio(URL.createObjectURL(b)); noteAudio.play();
+}
+
+/* ---------- Anhänge an Kommentaren (v4.9p, Robert 13.11.) ----------
+ * „＋“ neben dem Kommentarfeld: Bild, kurzes Video oder Datei als Referenz anhängen (iOS bietet Fotomediathek, Kamera und Dateien an).
+ * Ein Anhang ist technisch eine Notiz mit art 'datei' (+ name, size) – gleicher Weg wie Sprachnotizen: IndexedDB 'notes', Speicherdatei,
+ * einzeln an den Briefkasten (große in Teilen), beim Abholen nach Eingang\<Name>\anhaenge\. Fotos werden auf max. 2560 px verkleinert. */
+const ANH_MAX = 60 * 1024 * 1024, ANH_TEIL = 19 * 1024 * 1024;
+const istAnhang = (n) => !!n && n.art === 'datei';
+const anzAnh = (s) => (s.notes || []).filter(istAnhang).length;
+const anzSprache = (s) => (s.notes || []).filter((n) => !istAnhang(n)).length;
+const anhFelder = (n) => (istAnhang(n) ? { art: 'datei', name: n.name, size: n.size } : {});
+const anhIcon = (n) => (/^image\//.test(n.mime) ? '🖼' : /^video\//.test(n.mime) ? '🎞' : '📄');
+const mbTxt = (b) => (b >= 1048576 ? (b / 1048576).toFixed(1).replace('.', ',') + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB');
+const anhKnopf = (attr) => `<button type="button" class="anh-plus" ${attr} title="Bild, Video oder Datei anhängen" aria-label="Anhang hinzufügen">＋</button>`;
+function notizZeilen(notes, playAttr, delAttr) {
+  let k = 0;
+  return notes.map((n, i) => (istAnhang(n)
+    ? `<div class="note anh">${anhIcon(n)} <span class="anh-name">${esc(n.name || 'Anhang')}</span> · ${mbTxt(n.size || 0)}
+      <button ${playAttr(i)} title="Ansehen">👁</button><button ${delAttr(i)} class="ghost danger" title="Anhang entfernen">✕</button></div>`
+    : `<div class="note">🎙 Sprachnotiz ${++k} · ${n.dur ? n.dur.toFixed(0) + ' s' : ''}
+      <button ${playAttr(i)}>▶</button><button ${delAttr(i)} class="ghost danger">✕</button></div>`)).join('');
+}
+async function bildVerkleinern(f) {
+  if (!/^image\/(jpeg|png|webp|heic|heif)$/i.test(f.type)) return f;
+  try {
+    const bmp = await createImageBitmap(f);
+    const sc = Math.min(1, 2560 / Math.max(bmp.width, bmp.height));
+    if (sc === 1 && f.size < 3e6 && /jpeg|png|webp/i.test(f.type)) return f;
+    const c = document.createElement('canvas'); c.width = Math.round(bmp.width * sc); c.height = Math.round(bmp.height * sc);
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    const b = await new Promise((res) => c.toBlob(res, 'image/jpeg', 0.85));
+    return b && b.size < f.size ? b : f;
+  } catch { return f; }
+}
+// zielFn liefert beim Einfügen das Kommentar-Objekt (oder null, wenn es inzwischen weg ist)
+function anhaengen(zielFn) {
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.multiple = true; inp.style.cssText = 'position:fixed;left:-9999px;opacity:0';   // ohne accept: iOS zeigt Fotomediathek, Foto/Video aufnehmen, Dateien
+  document.body.appendChild(inp);
+  const pid = S.proj && S.proj.id;
+  inp.onchange = async () => {
+    const files = [...inp.files]; inp.remove();
+    if (!files.length || !S.proj || S.proj.id !== pid) return;
+    const dest = zielFn(); if (!dest) { toast('Kommentar ist weg – Anhang nicht gespeichert'); return; }
+    let n0 = 0;
+    for (const f of files) {
+      const b = await bildVerkleinern(f);
+      if (b.size > ANH_MAX) { toast(`„${f.name}“ ist zu groß (${mbTxt(b.size)}, max. 60 MB) – bitte kürzer schneiden`, 6000); continue; }
+      const name = (b !== f ? String(f.name || 'Foto').replace(/\.[^.]+$/, '') + '.jpg' : String(f.name || 'Anhang')).slice(0, 120);
+      const n = { id: uid(), art: 'datei', mime: b.type || f.type || 'application/octet-stream', name, size: b.size, created: Date.now() };
+      try { await DB.put('notes', b, n.id); } catch (e) { log('anhang-fehler', { msg: String(e && e.message) }); toast('Anhang konnte nicht gespeichert werden (Speicher voll?)', 5000); continue; }
+      dest.notes.push(n); n0++;
+      log('anhang', { zu: dest.id, mime: n.mime, kb: Math.round(b.size / 1024) });
+    }
+    if (n0) { changed(); toast(n0 === 1 ? '📎 Angehängt' : `📎 ${n0} Anhänge angehängt`); }
+  };
+  inp.click();
+}
+async function anhZeigen(n) {
+  const b = await DB.get('notes', n.id).catch(() => null);
+  if (!b) { toast('Anhang fehlt auf diesem Gerät'); return; }
+  const u = URL.createObjectURL(b);
+  const inhalt = /^image\//.test(n.mime) ? `<img src="${u}" class="anh-voll" alt="">`
+    : /^video\//.test(n.mime) ? `<video src="${u}" class="anh-voll" controls playsinline autoplay></video>`
+    : `<p><a href="${u}" download="${esc(n.name || 'Anhang')}" target="_blank" rel="noopener">${anhIcon(n)} ${esc(n.name || 'Anhang')} öffnen</a></p>`;
+  modal(`<h2 style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${anhIcon(n)} ${esc(n.name || 'Anhang')}</h2>${inhalt}
+    <div class="modal-actions"><button data-x="1">Schließen</button></div>`, (box) => {
+    box.querySelector('[data-x]').onclick = () => { closeModal(); URL.revokeObjectURL(u); };
+  });
 }
 
 /* ---------- Timeline (Canvas) ---------- */
@@ -1846,7 +1916,7 @@ async function exportCtx(ctx, view, probleme, wo) {
     const notes = [];
     for (const n of s.notes) {
       const b = await DB.get('notes', n.id);
-      if (b) notes.push({ id: n.id, mime: n.mime, dur: n.dur, created: new Date(n.created).toISOString(), data: await blobToB64(b) });
+      if (b) notes.push({ id: n.id, mime: n.mime, dur: n.dur, ...anhFelder(n), created: new Date(n.created).toISOString(), data: await blobToB64(b) });
       else missingAudio++;
     }
     const base = { id: s.id, kind: s.kind, stars: s.stars, text: s.text, created: new Date(s.created).toISOString(), notes, ...(s.shot ? { shot: s.shot } : {}) };
@@ -2024,7 +2094,7 @@ async function importSels(arr, clipIdOf) {
         const bin = Uint8Array.from(atob(n.data), (ch) => ch.charCodeAt(0));
         await DB.put('notes', new Blob([bin], { type: n.mime }), n.id);
       }
-      notes.push({ id: n.id, mime: n.mime, dur: n.dur, created: Date.parse(n.created) });
+      notes.push({ id: n.id, mime: n.mime, dur: n.dur, ...anhFelder(n), created: Date.parse(n.created) });
     }
     const base = { id: x.id, kind: x.kind, stars: x.stars || 0, text: x.text || '', notes, created: Date.parse(x.created) };
     if (x.kind === 'marker') { list.push({ ...base, t: x.t, ...(x.shot ? { shot: x.shot } : {}) }); continue; }
@@ -2973,11 +3043,17 @@ async function bkNotizenHoch(link, notes, silent) {
     const n = offen[i], b = await DB.get('notes', n.id).catch(() => null);
     if (!b) continue;   // Audio fehlt auf diesem Gerät (steht schon in „probleme“)
     if (!silent) $('btnSend').textContent = `Senden … ${i + 1}/${offen.length} 🎙`;
-    let r; const ab = new AbortController(), to = setTimeout(() => ab.abort(), 120000);
-    try { r = await fetch(`${link.url}/v1/notiz?k=${encodeURIComponent(link.key)}&n=${encodeURIComponent(n.id)}`, { method: 'POST', headers: { 'content-type': n.mime || b.type || 'audio/mp4' }, body: b, signal: ab.signal }); }
-    catch { return 'netz'; } finally { clearTimeout(to); }
-    if (r.status >= 500 || r.status === 429) return 'netz';
-    if (!r.ok) { const j = await r.json().catch(() => ({})); return j.fehler === 'zu_gross' ? 'Eine Sprachnotiz ist zu lang (über 20 MB). Bitte über „Speichern“ als Datei schicken.' : 'Sprachnotiz abgelehnt: ' + (j.fehler || r.status); }
+    // Anhänge (Bild/Video/Datei, v4.9p) über 19 MB gehen in Teilen (je KV-Wert max. 25 MiB), der Briefkasten setzt sie wieder zusammen
+    const teile = b.size > ANH_TEIL ? Math.ceil(b.size / ANH_TEIL) : 1;
+    for (let t = 1; t <= teile; t++) {
+      if (!silent && teile > 1) $('btnSend').textContent = `Senden … ${i + 1}/${offen.length} 📎 ${t}/${teile}`;
+      const stueck = teile > 1 ? b.slice((t - 1) * ANH_TEIL, t * ANH_TEIL) : b;
+      let r; const ab = new AbortController(), to = setTimeout(() => ab.abort(), 300000);
+      try { r = await fetch(`${link.url}/v1/notiz?k=${encodeURIComponent(link.key)}&n=${encodeURIComponent(n.id)}${teile > 1 ? `&teil=${t}&teile=${teile}` : ''}`, { method: 'POST', headers: { 'content-type': n.mime || b.type || 'audio/mp4' }, body: stueck, signal: ab.signal }); }
+      catch { return 'netz'; } finally { clearTimeout(to); }
+      if (r.status >= 500 || r.status === 429) return 'netz';
+      if (!r.ok) { const j = await r.json().catch(() => ({})); return j.fehler === 'zu_gross' ? (istAnhang(n) ? `Anhang „${n.name}“ ist zu groß (max. 60 MB).` : 'Eine Sprachnotiz ist zu lang (über 20 MB). Bitte über „Speichern“ als Datei schicken.') : (istAnhang(n) ? 'Anhang abgelehnt: ' : 'Sprachnotiz abgelehnt: ') + (j.fehler || r.status); }
+    }
   }
   log('bk-notizen', { neu: offen.length, schon_da: notes.length - offen.length });
   return 'ok';

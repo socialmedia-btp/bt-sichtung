@@ -361,3 +361,14 @@ body.fs .seq-wrap { position: fixed; left: 0; right: 0; bottom: 0; height: 270px
   background: linear-gradient(180deg, transparent, rgba(0,0,0,0.6) 22%, rgba(0,0,0,0.75)); }
 body.fs.reel .tc, body.fs.reel .fs-mini { bottom: 286px; }
 body.fs.reel .cutbar { bottom: 350px; }
+
+/* Anhänge an Kommentaren (v4.9p): ＋ neben dem Kommentarfeld */
+.txt-anh { display: flex; align-items: center; gap: 6px; }
+.txt-anh input[type=text] { flex: 1; min-width: 0; }
+.current .txt-anh { margin-top: 8px; }
+.current .txt-anh #shotText { margin-top: 0; }
+.anh-plus { flex: none; width: 44px; height: 44px; min-width: 44px; padding: 0; border-radius: 50%; font-size: 22px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center; }
+.note.anh .anh-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.anh-voll { display: block; max-width: 100%; max-height: 70vh; margin: 8px auto; border-radius: 8px; background: #000; }
+@media (max-width: 600px) { .anh-plus { width: 36px; height: 36px; min-width: 36px; font-size: 19px; } }
