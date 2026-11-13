@@ -372,3 +372,6 @@ body.fs.reel .cutbar { bottom: 350px; }
 .note.anh .anh-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .anh-voll { display: block; max-width: 100%; max-height: 70vh; margin: 8px auto; border-radius: 8px; background: #000; }
 @media (max-width: 600px) { .anh-plus { width: 36px; height: 36px; min-width: 36px; font-size: 19px; } }
+
+/* Cut kommentieren (v4.9q) */
+.cut-notiz { min-width: 62px; min-height: 62px; border-radius: 31px; font-size: 24px; background: #ff9f0a; color: #1a1000; }

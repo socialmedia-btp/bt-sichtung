@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9p';
+const APP_VERSION = 'v4.9q';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -961,7 +961,7 @@ function toggleCutMode(on = !CUT.mode) {
   if (!on) stopCutRec();
   CUT.mode = on; $('cutbar').classList.toggle('hidden', !on);
   log('cutmodus', { an: on });
-  if (on) toast('▶ = Takt-Aufnahme nach 3-2-1 · ✂ = Cut (auch einzeln ohne Aufnahme) · ■ = Stopp', 4500);
+  if (on) toast('▶ = Takt-Aufnahme nach 3-2-1 · ✂ = Cut (auch einzeln ohne Aufnahme) · ■ = Stopp · 💬 = Cut kommentieren', 4500);
   requestDraw();
 }
 function cutNow() { const c = S.byId.get(video.dataset.cid); return c && S.playing ? c.s + video.currentTime : S.T; }
@@ -1030,6 +1030,20 @@ function effectiveCuts(takes = S.state.takes) {
   }
   return cuts.sort((a, b) => a.t - b.t);
 }
+/* Cut kommentieren (v4.9q, Robert 13.11.): 💬 in der Cut-Leiste → Kommentar am nächsten Schnitt zum Abspielzeiger. Technisch ein Marker
+ * mit cut: true (Text, Sprachnotiz, ＋ Anhang wie jeder Kommentar); in der Liste und in der Auswertung zuerst und als „Vorrang“. */
+function cutKommentar() {
+  if (CUT.rec || CUT.countdown) { toast('Erst ■ stoppen, dann den Cut kommentieren'); return; }
+  const cuts = effectiveCuts();
+  if (!cuts.length) { toast('Noch kein Cut – erst ✂ tippen'); return; }
+  stopPlay();
+  const c = cuts.reduce((a, b) => (Math.abs(b.t - S.T) < Math.abs(a.t - S.T) ? b : a));
+  let m = sels().find((x) => x.cut && Math.abs(x.t - c.t) < 0.02);
+  if (!m) { m = { id: uid(), kind: 'marker', cut: true, t: c.t, stars: 0, text: '', notes: [], created: Date.now() }; sels().push(m); }
+  log('cut-kommentar', { pos: +c.t.toFixed(3), neu: !m.text && !m.notes.length });
+  S.T = c.t; S.curSel = m; showFrame(true); changed();
+  setTimeout(() => { const i = $('selText'); if (i) { i.scrollIntoView({ block: 'nearest' }); i.focus(); } }, 60);
+}
 function deleteTake(id) { S.state.takes = S.state.takes.filter((x) => x.id !== id); S.selTake = null; log('take-geloescht', { id }); changed(); }
 
 /* ---------- Rückgängig / Wiederholen ----------
@@ -1080,6 +1094,7 @@ function selLabel(s) {
     const sh = S.ver.manifest.shots.find((x) => x.id === s.shot);
     return { dot: '#4c9aff', l1: `💬 Shot ${sh ? sh.nr : '?'} · ${sh ? shotName(sh) : ''}`, l2: s.text || '' };
   }
+  if (s.kind === 'marker' && s.cut) return { dot: '#f2c14e', l1: `✂ Cut ${clock(s.t)} · Vorrang`, l2: s.text || '' };
   if (s.kind === 'marker') return { dot: '#fff', l1: `⚑ Marker ${clock(s.t)}`, l2: s.text || '' };
   const c = S.byId.get(s.clipId); const tr = trackOf(s.track);
   return { dot: tr.color, l1: `${tr.label} · ${c.name}`, l2: `${clock(c.s + s.inT)} · ${s.open ? 'nur IN – OUT fehlt' : durTxt(s.outT - s.inT)}${s.text ? ' · ' + s.text : ''}` };
@@ -1087,7 +1102,7 @@ function selLabel(s) {
 function renderSide() {
   pnKnopf();   // goldener Projektnotiz-Knopf: Anzahl aktuell halten
   const list = $('selList');
-  const all = [...sels()].sort((a, b) => selRange(a)[0] - selRange(b)[0]);
+  const all = [...sels()].sort((a, b) => (!!b.cut - !!a.cut) || selRange(a)[0] - selRange(b)[0]);   // Cut-Kommentare (Vorrang) zuerst
   $('selCount').textContent = `${all.filter((s) => s.kind === 'range').length} ${isVersionView() ? 'Bereiche' : 'Clips'} · ${all.filter((s) => s.kind === 'marker').length} Marker`;
   list.innerHTML = changesHtml();
   list.querySelectorAll('.chg').forEach((el) => el.onclick = () => {
@@ -1124,7 +1139,9 @@ function renderCurrent() {
         <button data-k="playsel">▶ Auswahl</button></div>`;
   }
   h += `<div class="card-row stars">${[1, 2, 3].map((n) => `<button data-k="star${n}" class="${s.stars >= n ? 'on' : ''}">★</button>`).join('')}</div>
-    <div class="txt-anh"><input type="text" id="selText" placeholder="Notiz (optional)" value="${esc(s.text)}">${anhKnopf('data-k="anh"')}</div>
+    ${s.cut ? '<div class="hint">Kommentar zu diesem Schnitt – hat Vorrang vor den anderen Kommentaren an dieser Stelle.</div>' : ''}
+    <div class="txt-anh"><input type="text" id="selText" placeholder="${s.cut ? 'Was soll an diesem Schnitt passieren?' : 'Notiz (optional)'}" value="${esc(s.text)}">${anhKnopf('data-k="anh"')}</div>
+    ${s.cut ? '<button data-k="cutrec" class="rec-scene">🎙 Sprachnotiz zum Cut</button>' : ''}
     <div class="notes">${notizZeilen(s.notes, (i) => `data-k="pn${i}"`, (i) => `data-k="dn${i}"`)}</div>`;
   box.innerHTML = h;
   box.querySelector('#selText').oninput = (e) => { s.text = e.target.value; save(); };
@@ -1138,6 +1155,7 @@ function renderCurrent() {
     if (k === 'out+1') return nudge(s, 'out', 1);
     if (k === 'playsel') return playSelection(s);
     if (k === 'anh') return anhaengen(() => (sels().includes(s) ? s : null));
+    if (k === 'cutrec') { stopPlay(); S.T = s.t; showFrame(true); return toggleRec(); }
     if (k.startsWith('star')) { const n = +k.slice(4); s.stars = s.stars === n ? 0 : n; return changed(); }
     if (k.startsWith('pn')) return playNote(s.notes[+k.slice(2)]);
     if (k.startsWith('dn')) { const n = s.notes[+k.slice(2)]; s.notes = s.notes.filter((x) => x !== n); return changed(); }
@@ -1554,9 +1572,9 @@ function draw() {
       if (s.kind !== 'marker') continue;
       const x = xOf(s.t); if (x < HEAD - 20 || x > w + 20) continue;
       const cur = s === S.curSel;
-      ctx.fillStyle = cur ? '#f2c14e' : '#e8e8ec';
+      ctx.fillStyle = cur ? '#f2c14e' : s.cut ? '#ff9f0a' : '#e8e8ec';
       ctx.beginPath(); roundRect(x - 2, G.cy + 4, 18, COM_H - 9, 4); ctx.fill();
-      ctx.fillStyle = '#111'; ctx.font = '700 10px sans-serif'; ctx.fillText(s.notes.length ? '🎙' : '⚑', x + 1, G.cy + 18);
+      ctx.fillStyle = '#111'; ctx.font = '700 10px sans-serif'; ctx.fillText(s.cut ? '✂' : s.notes.length ? '🎙' : '⚑', x + 1, G.cy + 18);
     }
     const takes = [...(S.state.takes || [])]; if (CUT.rec) takes.push({ ...CUT.rec, end: S.T, live: true });
     const eff = new Set(effectiveCuts().map((c) => c.take + ':' + c.t));
@@ -1919,7 +1937,7 @@ async function exportCtx(ctx, view, probleme, wo) {
       if (b) notes.push({ id: n.id, mime: n.mime, dur: n.dur, ...anhFelder(n), created: new Date(n.created).toISOString(), data: await blobToB64(b) });
       else missingAudio++;
     }
-    const base = { id: s.id, kind: s.kind, stars: s.stars, text: s.text, created: new Date(s.created).toISOString(), notes, ...(s.shot ? { shot: s.shot } : {}) };
+    const base = { id: s.id, kind: s.kind, stars: s.stars, text: s.text, created: new Date(s.created).toISOString(), notes, ...(s.shot ? { shot: s.shot } : {}), ...(s.cut ? { cut: true } : {}) };
     if (s.kind === 'marker') {
       selections.push(view.isVersion ? { ...base, t: rel(s.t), frame: Math.round(rel(s.t) * view.fps), clock: clock(rel(s.t), view.fps) }
         : { ...base, clock: clock(s.t), t: s.t });
@@ -2097,7 +2115,7 @@ async function importSels(arr, clipIdOf) {
       notes.push({ id: n.id, mime: n.mime, dur: n.dur, ...anhFelder(n), created: Date.parse(n.created) });
     }
     const base = { id: x.id, kind: x.kind, stars: x.stars || 0, text: x.text || '', notes, created: Date.parse(x.created) };
-    if (x.kind === 'marker') { list.push({ ...base, t: x.t, ...(x.shot ? { shot: x.shot } : {}) }); continue; }
+    if (x.kind === 'marker') { list.push({ ...base, t: x.t, ...(x.shot ? { shot: x.shot } : {}), ...(x.cut ? { cut: true } : {}) }); continue; }
     const cid = clipIdOf(x);
     if (cid) list.push({ ...base, clipId: cid, track: x.track, inT: x.in, outT: x.out, open: !!x.open });
     else skipped++;
@@ -2513,6 +2531,7 @@ const ACT = {
   cutmode: () => toggleCutMode(),
   cutstop: () => stopCutRec(),
   cutrec: () => startCutCountdown(),
+  cutnotiz: () => cutKommentar(),
   reel: () => (reel ? endReel() : playShortlist()),
   more: () => document.body.classList.toggle('fs-open'),
 };
@@ -3008,14 +3027,14 @@ async function bkQ(pid) { const q = await DB.get('state', bkQKey(pid)).catch(() 
 async function bkQSet(pid, q) { if (q.length) await DB.put('state', q, bkQKey(pid)); else await DB.del('state', bkQKey(pid)).catch(() => {}); }
 let bkLaeuft = Promise.resolve();
 function bkSerial(fn) { const p = bkLaeuft.then(fn, fn); bkLaeuft = p.catch(() => {}); return p; } // Übertragungen nacheinander
-async function bkSend(silent, fertig) {
+async function bkSend(silent, fertig, musikBitte = true) {
   if (rec || recStarting) { if (!silent) toast('Erst die Sprachnotiz beenden'); return; }
   const proj = S.proj, pid = await projPid(proj), link = await bkLink(pid);
   if (!link) return;
   if (!silent) { stopPlay(); $('btnSend').textContent = 'Senden …'; }
   const gen = S.ps.gen || 0;
   const data = await buildExport(); // ohne Diagnose-Log (Astra F03)
-  if (fertig) { data.fertig = true; data.fertig_zeit = new Date().toISOString(); }   // nur dieser Stand löst bei Blue Tacit die Musik aus
+  if (fertig) { data.fertig = true; data.fertig_zeit = new Date().toISOString(); data.musik_bitte = !!musikBitte; }   // nur dieser Stand löst bei Blue Tacit die Musik aus
   const notes = bkNotizenAuslagern(data);
   const body = JSON.stringify(data);
   await bkQSet(pid, [...(await bkQ(pid)).filter((x) => x.fehler), { stand_id: data.stand_id, body, notes, gen, t: Date.now() }]);
@@ -3099,16 +3118,20 @@ async function bkSendenFragen() {
     try { const r = await (await fetch(`${link.url}/v1/link?k=${encodeURIComponent(link.key)}`)).json(); if (r && r.ok) { link.team = !!r.rohmaterial; await DB.put('state', link, '__bk__' + pid); } } catch { /* offline */ }
   }
   if (!link.team) return bkSend(false);
+  // Musik schon gewählt (Robert 13.11.) → „fertig“ fordert keine Musik mehr an; der Stand trägt musik_bitte: false
+  let musikDa = !!(muDaten && muDaten.wahl && Object.keys(muDaten.wahl).length);
+  if (!musikDa) { try { const r = await fetch(`${link.url}/v1/musik?k=${encodeURIComponent(link.key)}`); const j = r.ok ? await r.json() : null; musikDa = !!(j && j.musik && j.musik.wahl && Object.keys(j.musik.wahl).length); } catch { /* offline */ } }
+  const fertigTxt = musikDa ? '✅ Sichtung fertig' : '✅ Sichtung fertig – Musik bitte';
   modal(`<h2>An Blue Tacit senden</h2>
     <p class="hint">Deine Arbeit wird auf dem iPad <b>automatisch gespeichert</b> – auch wenn es sich sperrt oder die App zugeht. Ein
     Zwischenstand ist nur eine zusätzliche Sicherung.</p>
     <button id="bsZwischen" class="pn-rec" style="background:var(--panel2)">Zwischenstand sichern</button>
-    <button id="bsFertig" class="gold pn-rec">✅ Sichtung fertig – Musik bitte</button>
-    <p class="hint">„Sichtung fertig“ erst tippen, wenn du alles durchgesehen und deine Projektnotizen aufgenommen hast. Dann sucht
-    Blue Tacit die Musik und du bekommst Bescheid.</p>
+    <button id="bsFertig" class="gold pn-rec">${fertigTxt}</button>
+    <p class="hint">„Sichtung fertig“ erst tippen, wenn du alles durchgesehen und deine Projektnotizen aufgenommen hast. ${musikDa
+      ? 'Die Musik ist schon ausgewählt – es wird keine neue gesucht.' : 'Dann sucht Blue Tacit die Musik und du bekommst Bescheid.'}</p>
     <div class="row"><span class="grow"></span><button onclick="closeModal()">Abbrechen</button></div>`, (b) => {
     b.querySelector('#bsZwischen').onclick = () => { closeModal(); log('senden-zwischen', {}); bkSend(false); };
-    b.querySelector('#bsFertig').onclick = () => { closeModal(); log('senden-fertig', {}); bkSend(false, true); };
+    b.querySelector('#bsFertig').onclick = () => { closeModal(); log('senden-fertig', { musik: !musikDa }); bkSend(false, true, !musikDa); };
   });
 }
 $('btnSend').onclick = () => bkSendenFragen();
