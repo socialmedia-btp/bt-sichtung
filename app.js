@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9h';
+const APP_VERSION = 'v4.9i';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -1072,6 +1072,7 @@ function selLabel(s) {
   return { dot: tr.color, l1: `${tr.label} · ${c.name}`, l2: `${clock(c.s + s.inT)} · ${s.open ? 'nur IN – OUT fehlt' : durTxt(s.outT - s.inT)}${s.text ? ' · ' + s.text : ''}` };
 }
 function renderSide() {
+  pnKnopf();   // goldener Projektnotiz-Knopf: Anzahl aktuell halten
   const list = $('selList');
   const all = [...sels()].sort((a, b) => selRange(a)[0] - selRange(b)[0]);
   $('selCount').textContent = `${all.filter((s) => s.kind === 'range').length} ${isVersionView() ? 'Bereiche' : 'Clips'} · ${all.filter((s) => s.kind === 'marker').length} Marker`;
@@ -1895,6 +1896,13 @@ async function buildExport() {
   }
   // Stände zu Versionen, die auf diesem Gerät (noch) nicht importiert sind, unverändert mitgeben – nichts geht verloren
   for (const w of Object.values(ps.wartend || {})) { out.versionen.push(w); probleme.push(`${w.sequenz || w.version_id}: nur Stand, Version auf diesem Gerät nicht importiert`); }
+  // Projektnotizen (v4.9i): allgemeine Sprachnotizen zum ganzen Projekt, ohne Clip/Zeit
+  out.projekt_notizen = [];
+  for (const n of ps.projektNotizen || []) {
+    const b = await DB.get('notes', n.id).catch(() => null);
+    if (b) out.projekt_notizen.push({ id: n.id, mime: n.mime, dur: n.dur, created: new Date(n.created).toISOString(), data: await blobToB64(b) });
+    else probleme.push('Projektnotiz ohne Audio auf diesem Gerät');
+  }
   out.probleme = probleme;
   out.view = view; out.app = APP_VERSION;
   if (probleme.length) log('export-probleme', { n: probleme.length, erste: probleme[0] });
@@ -1968,7 +1976,7 @@ async function readSaveFile(f) {
 async function belongsTo(d, proj) {
   return d.format === 'bt-stand' && d.project_id ? d.project_id === await projPid(proj) : d.project === proj.meta.name;
 }
-const hasContent = (ps) => contexts(ps).some((c) => c.selections.length || (c.takes || []).length
+const hasContent = (ps) => (ps.projektNotizen || []).length > 0 || contexts(ps).some((c) => c.selections.length || (c.takes || []).length
   || Object.keys(c.bewertungen || {}).length || (c.ereignisse || []).length) || Object.keys(ps.wartend || {}).length > 0;
 async function openSaveFile(f) { const d = await readSaveFile(f); if (d) await openStand(d, false); }
 async function openStand(d, fromHome) {
@@ -2042,6 +2050,7 @@ async function loadSelection(d) {
   const src = d.format === 'bt-stand' && legacy ? d.selections.map((x) => (x.kind === 'marker' ? { ...x, t: fv.base + x.t } : x)) : d.selections;
   const { list, skipped } = await importSels(src, (x) => (legacy ? f0.id : footIds.has(x.clip) ? x.clip : null));
   const shortlist = newCtx({ ...keepView(S.ps.shortlist), selections: list, offsets: d.offsets || {}, takes: importTakes(d.takes, fv.base) });
+  const pn = Array.isArray(d.projekt_notizen) ? (await importSels([{ kind: 'marker', notes: d.projekt_notizen }], () => null)).list[0].notes : null;
   if (d.view && (d.view.tab || 'shortlist') === 'shortlist') Object.assign(shortlist, { T: d.view.T ?? shortlist.T, activeTrack: d.view.activeTrack || shortlist.activeTrack, pps: d.view.pps || shortlist.pps });
   const full = Array.isArray(d.versionen);
   const verCtx = new Map(), wartend = {};
@@ -2059,6 +2068,7 @@ async function loadSelection(d) {
   stopPlay(); endReel(); if (CUT.mode) toggleCutMode(false);
   S.state = null; S.hist = {};
   S.ps.shortlist = shortlist;
+  if (pn) S.ps.projektNotizen = pn;
   if (full) {
     for (const ver of S.ps.versions) ver.ctx = verCtx.get(ver) || newCtx({ ...keepView(ver.ctx), ereignisse: [], activeTrack: 'VERSION' });
     S.ps.wartend = wartend;
@@ -2073,6 +2083,71 @@ async function loadSelection(d) {
   toast(`Stand geöffnet: ${list.length} Einträge` + (nv ? ` · ${nv} Version${nv > 1 ? 'en' : ''}` : '') + (skipped ? ` (${skipped} Clips fehlen im Projekt)` : '')
     + (nw ? ` · ${nw} Version${nw > 1 ? 'en' : ''} noch importieren` : ''), 4500);
 }
+
+/* ---------- Projektnotizen (Robert 13.11.) ----------
+ * Allgemeine Sprachnotizen zum GANZEN Projekt – nicht an Clip oder Zeit gebunden: Struktur, Arbeitsanweisungen, Wünsche nach dem
+ * Durchsehen. Liegen in S.ps.projektNotizen (Audio wie alle Notizen in IndexedDB „notes“), gehen mit Senden/Speichern als
+ * `projekt_notizen` mit und stehen in der Auswertung (auswahl.md) ganz oben. */
+let pnRec = null;
+function pnKnopf() {
+  const b = $('btnProjNotiz'); if (!b) return;
+  const n = ((S.ps && S.ps.projektNotizen) || []).length;
+  b.classList.toggle('rec', !!pnRec);
+  b.innerHTML = pnRec ? '■<span class="pn-wort"> Projekt</span>' : `🎙<span class="pn-wort"> Projekt</span>${n ? ' · ' + n : ''}`;
+}
+const pnZeit = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
+function pnFenster() {
+  if (!S.ps) return;
+  const liste = S.ps.projektNotizen || [];
+  modal(`<h2>🎙 Notizen zum ganzen Projekt</h2>
+    <p class="hint">Für alles, was nicht zu einem bestimmten Clip gehört: Struktur, Reihenfolge, Arbeitsanweisungen, Wünsche – z. B. nachdem du
+    das ganze Footage durchgesehen hast. Geht mit „Senden“ bzw. „Speichern“ mit.</p>
+    <button id="pnRecBtn" class="gold pn-rec${pnRec ? ' rec' : ''}">${pnRec ? '■ Aufnahme beenden' : '🎙 Projektnotiz aufnehmen'}</button>
+    <div class="pn-list">${liste.length ? liste.map((n, i) => `<div class="pn-item"><div class="t"><b>Projektnotiz ${i + 1}</b>
+      <div class="l2">${pnZeit(n.dur || 0)} · ${new Date(n.created).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</div></div>
+      <button data-pp="${i}">▶</button><button data-pd="${i}" class="ghost danger">✕</button></div>`).join('') : '<p class="hint">Noch keine Projektnotiz.</p>'}</div>
+    <div class="row"><span class="grow"></span><button class="primary" id="pnZu">Fertig</button></div>`, (b) => {
+    b.querySelector('#pnRecBtn').onclick = () => pnAufnahme();
+    b.querySelector('#pnZu').onclick = () => { if (pnRec) pnRec.stop(); closeModal(); };
+    b.querySelectorAll('[data-pp]').forEach((x) => x.onclick = () => playNote(liste[+x.dataset.pp]));
+    b.querySelectorAll('[data-pd]').forEach((x) => x.onclick = () => {
+      if (!confirm('Diese Projektnotiz löschen?')) return;
+      const n = liste[+x.dataset.pd];
+      S.ps.projektNotizen = liste.filter((q) => q !== n);   // Audio bleibt in der Datenbank (wie bei Clip-Notizen)
+      log('projektnotiz-geloescht', { id: n.id }); changed(); pnKnopf(); pnFenster();
+    });
+  });
+}
+async function pnAufnahme() {
+  if (pnRec) { pnRec.stop(); return; }
+  if (rec || recStarting) { toast('Erst die Clip-Sprachnotiz beenden'); return; }
+  stopPlay();
+  const mime = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm'].find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m));
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch (e) { log('mikro-fehler', { name: e.name, wo: 'projekt' }); toast('Kein Mikrofonzugriff – in den Einstellungen erlauben'); return; }
+  let r;
+  try { r = new MediaRecorder(stream, { ...(mime ? { mimeType: mime } : {}), audioBitsPerSecond: 64000 }); }
+  catch (e) { stream.getTracks().forEach((x) => x.stop()); toast('Aufnahme nicht möglich'); return; }
+  const chunks = [], t0 = Date.now(), pid = S.proj.id;
+  r.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  r.onstop = async () => {
+    stream.getTracks().forEach((x) => x.stop());
+    pnRec = null;
+    const blob = new Blob(chunks, { type: r.mimeType || mime || 'audio/mp4' });
+    const n = { id: uid(), mime: blob.type, dur: (Date.now() - t0) / 1000, created: Date.now() };
+    await DB.put('notes', blob, n.id);
+    if (!S.proj || S.proj.id !== pid) { toast('Projektnotiz gespeichert, aber Projekt gewechselt'); return; }
+    S.ps.projektNotizen = [...(S.ps.projektNotizen || []), n];
+    log('projektnotiz-ende', { s: n.dur.toFixed(1) });
+    changed(); pnKnopf(); toast('Projektnotiz gespeichert ✓', 1800);
+    if (!$('modal').classList.contains('hidden') && $('pnRecBtn')) pnFenster();
+  };
+  pnRec = r; r.start(); log('projektnotiz-start', {});
+  pnKnopf();
+  const rb = $('pnRecBtn'); if (rb) { rb.classList.add('rec'); rb.textContent = '■ Aufnahme beenden'; }
+}
+$('btnProjNotiz').onclick = () => (pnRec ? pnRec.stop() : pnFenster());
 
 /* ---------- Hilfe ---------- */
 function help() {
@@ -2609,7 +2684,7 @@ async function bkSend(silent) {
  * nur `bk: true`; jede Notiz geht einmal als eigene Datei an den Briefkasten (schon vorhandene werden übersprungen). */
 function bkNotizenAuslagern(data) {
   const liste = [];
-  const alle = [...(data.selections || []), ...(data.versionen || []).flatMap((v) => v.kommentare || [])].flatMap((x) => x.notes || []);
+  const alle = [...(data.selections || []), ...(data.versionen || []).flatMap((v) => v.kommentare || [])].flatMap((x) => x.notes || []).concat(data.projekt_notizen || []);
   for (const n of alle) if (n && n.data) { delete n.data; n.bk = true; liste.push({ id: n.id, mime: n.mime }); }
   return liste;
 }

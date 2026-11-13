@@ -242,6 +242,17 @@ body.fs .reel-bar { position: fixed; top: max(12px, var(--safe-t)); left: 50%; t
 .stars button.rot { font-size: 15px; font-weight: 700; color: #6b6f76; margin-left: 10px; border: 1px solid #3a3a3e; border-radius: 10px; padding: 0 12px; }
 .stars button.rot.on { color: #fff; background: var(--red); border-color: var(--red); }
 .rec-scene { margin-top: 6px; min-height: 44px; width: 100%; background: var(--panel2); }
+/* Projektnotizen (v4.9i): goldener Knopf oben + Fenster */
+button.gold { background: linear-gradient(180deg, #f7d36a, #d9a521); color: #1c1000; font-weight: 700; box-shadow: 0 0 0 1px #f2c14e55; }
+button.gold.rec { background: var(--red); color: #fff; box-shadow: none; animation: pnPuls 1.2s ease-in-out infinite; }
+@keyframes pnPuls { 50% { opacity: 0.65; } }
+.pn-rec { width: 100%; min-height: 64px; font-size: 18px; margin: 10px 0 6px; }
+.pn-list { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; max-height: 46vh; overflow: auto; }
+.pn-item { display: flex; align-items: center; gap: 8px; background: var(--panel2); border-radius: 10px; padding: 6px 10px; }
+.pn-item .t { flex: 1; min-width: 0; }
+.pn-item .l2 { color: var(--muted); font-size: 13px; }
+/* iPad hochkant: Kopfleiste sonst ~45 px zu breit → Knopf nur 🎙 (+ Anzahl), etwas engere Abstände */
+@media (max-width: 900px) { #btnProjNotiz .pn-wort { display: none; } #editor > .bar { gap: 4px; } #btnProjNotiz { padding-left: 12px; padding-right: 12px; } }
 .current #shotText { margin-top: 8px; }
 
 /* v4.4 Inhalt verschieben (Slip) + Proxy-Vorschau */
