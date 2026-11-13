@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9k';
+const APP_VERSION = 'v4.9l';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -2812,13 +2812,14 @@ async function bkQ(pid) { const q = await DB.get('state', bkQKey(pid)).catch(() 
 async function bkQSet(pid, q) { if (q.length) await DB.put('state', q, bkQKey(pid)); else await DB.del('state', bkQKey(pid)).catch(() => {}); }
 let bkLaeuft = Promise.resolve();
 function bkSerial(fn) { const p = bkLaeuft.then(fn, fn); bkLaeuft = p.catch(() => {}); return p; } // Übertragungen nacheinander
-async function bkSend(silent) {
+async function bkSend(silent, fertig) {
   if (rec || recStarting) { if (!silent) toast('Erst die Sprachnotiz beenden'); return; }
   const proj = S.proj, pid = await projPid(proj), link = await bkLink(pid);
   if (!link) return;
   if (!silent) { stopPlay(); $('btnSend').textContent = 'Senden …'; }
   const gen = S.ps.gen || 0;
   const data = await buildExport(); // ohne Diagnose-Log (Astra F03)
+  if (fertig) { data.fertig = true; data.fertig_zeit = new Date().toISOString(); }   // nur dieser Stand löst bei Blue Tacit die Musik aus
   const notes = bkNotizenAuslagern(data);
   const body = JSON.stringify(data);
   await bkQSet(pid, [...(await bkQ(pid)).filter((x) => x.fehler), { stand_id: data.stand_id, body, notes, gen, t: Date.now() }]);
@@ -2867,7 +2868,11 @@ async function bkFlush(pid, link, silent) {
       // ältere abgelehnte Stände sind durch diesen vollständigen Stand überholt → weg (sonst bleibt „Senden ⚠“ stehen)
       for (let k = q.length - 1; k >= 0; k--) if (q[k].fehler && (q[k].gen || 0) <= (e.gen || 0)) q.splice(k, 1);
       if (S.ps && S.proj && (await projPid(S.proj)) === pid) { S.ps.bkGen = Math.max(S.ps.bkGen || 0, e.gen || 0); save(); }
-      if (!silent) { toast('An Blue Tacit gesendet ✓', 2500); setTimeout(pushFragen, 2700); }
+      if (!silent) {
+        const fertig = /"fertig":true/.test(e.body);
+        toast(fertig ? 'Danke! Blue Tacit sucht jetzt die Musik – du bekommst Bescheid ✓' : 'An Blue Tacit gesendet ✓', fertig ? 4000 : 2500);
+        setTimeout(pushFragen, fertig ? 4200 : 2700);
+      }
     } else {
       if (i >= 0) q[i].fehler = res;
       if (!silent) modal(`<h2>Nicht gesendet</h2><p>${esc(res)}</p><div class="row"><span class="grow"></span><button class="primary" onclick="closeModal()">OK</button></div>`);
@@ -2882,7 +2887,29 @@ async function bkRetry() {
   if (S.proj) await bkRender();
 }
 window.addEventListener('online', bkRetry);
-$('btnSend').onclick = () => bkSend(false);
+/* Senden bei Team-Links (Footage-Sichtung, Robert 13.11.): Auswahl „Zwischenstand sichern“ oder „✅ Sichtung fertig – Musik bitte“.
+ * Nur der fertige Stand weckt den Wächter auf Roberts PC (Musikvorschläge). Kunden-Links senden wie bisher direkt. */
+async function bkSendenFragen() {
+  if (rec || recStarting) { toast('Erst die Sprachnotiz beenden'); return; }
+  const pid = await projPid(S.proj), link = await bkLink(pid);
+  if (!link) return;
+  if (link.team === undefined) {
+    try { const r = await (await fetch(`${link.url}/v1/link?k=${encodeURIComponent(link.key)}`)).json(); if (r && r.ok) { link.team = !!r.rohmaterial; await DB.put('state', link, '__bk__' + pid); } } catch { /* offline */ }
+  }
+  if (!link.team) return bkSend(false);
+  modal(`<h2>An Blue Tacit senden</h2>
+    <p class="hint">Deine Arbeit wird auf dem iPad <b>automatisch gespeichert</b> – auch wenn es sich sperrt oder die App zugeht. Ein
+    Zwischenstand ist nur eine zusätzliche Sicherung.</p>
+    <button id="bsZwischen" class="pn-rec" style="background:var(--panel2)">Zwischenstand sichern</button>
+    <button id="bsFertig" class="gold pn-rec">✅ Sichtung fertig – Musik bitte</button>
+    <p class="hint">„Sichtung fertig“ erst tippen, wenn du alles durchgesehen und deine Projektnotizen aufgenommen hast. Dann sucht
+    Blue Tacit die Musik und du bekommst Bescheid.</p>
+    <div class="row"><span class="grow"></span><button onclick="closeModal()">Abbrechen</button></div>`, (b) => {
+    b.querySelector('#bsZwischen').onclick = () => { closeModal(); log('senden-zwischen', {}); bkSend(false); };
+    b.querySelector('#bsFertig').onclick = () => { closeModal(); log('senden-fertig', {}); bkSend(false, true); };
+  });
+}
+$('btnSend').onclick = () => bkSendenFragen();
 
 /* ---------- Start ---------- */
 (async () => {
