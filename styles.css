@@ -256,6 +256,15 @@ button.gold.rec { background: var(--red); color: #fff; box-shadow: none; animati
   /* Platz für 🎵: „Hilfe“ → „?“, „Öffnen“ → 📂 */
   #btnHelp { font-size: 0; padding-left: 12px; padding-right: 12px; } #btnHelp::after { content: '?'; font-size: 16px; font-weight: 700; }
   #editor > .bar label.btn { font-size: 0; } #editor > .bar label.btn::after { content: '📂'; font-size: 16px; } }
+/* Vollbild: Bedienung unten per Wischen nach unten ausblenden, nach oben zurück (v4.9j). Wischen links/rechts spult weiter. */
+body.fs .video-wrap { touch-action: none; }
+body.fs .tl-wrap, body.fs .seq-wrap, body.fs .tc, body.fs .fs-mini, body.fs.fs-open .transport, body.fs .cutbar { transition: transform .25s ease, opacity .25s ease; }
+body.fs.ui-weg .tl-wrap, body.fs.ui-weg .seq-wrap, body.fs.ui-weg .tc, body.fs.ui-weg .fs-mini, body.fs.ui-weg.fs-open .transport, body.fs.ui-weg .cutbar {
+  transform: translateY(calc(100% + 360px)); opacity: 0; pointer-events: none; }
+body.fs.fs-open.ui-weg .transport { transform: translate(-50%, calc(100% + 360px)); }
+.ui-griff { display: none; }
+body.fs.ui-weg .ui-griff { display: block; position: fixed; left: 50%; bottom: calc(6px + var(--safe-b)); transform: translateX(-50%); z-index: 7;
+  min-width: 64px; min-height: 30px; border-radius: 15px; background: rgba(28,28,30,.45); color: #fff; font-size: 18px; line-height: 1; padding: 4px 16px; }
 /* Musikvorschläge (v4.9j) */
 #btnMusik { padding-left: 12px; padding-right: 12px; }
 #btnMusik.neu { animation: pnPuls 1.2s ease-in-out infinite; }

@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9j';
+const APP_VERSION = 'v4.9k';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -2231,6 +2231,44 @@ $('btnMusik').onclick = () => muFenster();
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') muPruefen(false); });
 setInterval(() => { if (document.visibilityState === 'visible') muPruefen(false); }, 180000);
 
+/* ---------- Push-Benachrichtigung (Robert 13.11.) ----------
+ * Statt WhatsApp: Die Home-Bildschirm-App (iPadOS ≥ 16.4) meldet ein Push-Abo beim Briefkasten an; liegen Musikvorschläge bereit,
+ * schickt der Briefkasten einen Push ohne Inhalt und der Service Worker zeigt „🎵 Deine Musikvorschläge sind da“.
+ * Erlaubnis braucht einen Fingertipp → nach dem ersten erfolgreichen Senden einmal fragen (und über Hilfe → „🔔 Benachrichtigungen“). */
+const VAPID_PUBLIC = 'BObPoHO4RHwY1O9hCoh3PML2jPt2xCfLO5ozDzDvHMM3K6RG4EZ6OD0uvkDUoHNxTgMwauYFUZfo0ZGMCJRfc5Q';
+const pushGeht = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+function vapidBytes() { const p = VAPID_PUBLIC + '='.repeat((4 - VAPID_PUBLIC.length % 4) % 4); return Uint8Array.from(atob(p.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)); }
+async function pushAnmelden(still) {
+  if (!pushGeht()) { if (!still) toast(/iPhone|iPad|Macintosh/.test(navigator.userAgent) && !standalone() ? 'Benachrichtigungen gehen nur in der App auf dem Home-Bildschirm' : 'Dieses Gerät kann keine Benachrichtigungen', 4000); return false; }
+  try {
+    const erlaubt = Notification.permission === 'granted' || (await Notification.requestPermission()) === 'granted';
+    if (!erlaubt) { if (!still) toast('Benachrichtigungen nicht erlaubt (Einstellungen → Mitteilungen → Framepoint)', 4500); log('push-abgelehnt', {}); return false; }
+    const reg = await navigator.serviceWorker.ready;
+    const abo = (await reg.pushManager.getSubscription()) || (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: vapidBytes() }));
+    let n = 0;
+    for (const l of await bkAlleLinks()) {
+      const r = await fetch(`${l.url}/v1/push/abo?k=${encodeURIComponent(l.key)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(abo.toJSON()) }).catch(() => null);
+      if (r && r.ok) n++;
+    }
+    log('push-angemeldet', { links: n });
+    try { localStorage.setItem('fp-push', String(Date.now())); } catch { /* egal */ }
+    if (!still) toast('🔔 Benachrichtigungen an – du bekommst Bescheid, sobald Musik da ist', 3500);
+    return true;
+  } catch (e) { log('push-fehler', { msg: String(e && e.message || e) }); if (!still) toast('Benachrichtigungen ließen sich nicht einschalten'); return false; }
+}
+// Einmal nach dem ersten erfolgreichen Senden fragen (Fingertipp nötig → eigenes Fenster mit Knopf)
+function pushFragen() {
+  if (!pushGeht() || Notification.permission !== 'default') return;
+  try { if (localStorage.getItem('fp-push-gefragt')) return; localStorage.setItem('fp-push-gefragt', '1'); } catch { /* egal */ }
+  modal(`<h2>🔔 Bescheid bekommen?</h2><p>Sobald Blue Tacit deine Musikvorschläge fertig hat, zeigt dein iPad eine Mitteilung – auch wenn
+    Framepoint gerade zu ist.</p><div class="row"><span class="grow"></span><button id="puNein">Nein danke</button><button id="puJa" class="primary">Ja, benachrichtigen</button></div>`, (b) => {
+    b.querySelector('#puNein').onclick = closeModal;
+    b.querySelector('#puJa').onclick = async () => { closeModal(); await pushAnmelden(false); };
+  });
+}
+// Schon erlaubt → Abo still auffrischen (z. B. neuer Link auf diesem Gerät)
+setTimeout(() => { if (pushGeht() && Notification.permission === 'granted') pushAnmelden(true); }, 4000);
+
 /* ---------- Hilfe ---------- */
 function help() {
   modal(`<h2>So geht’s</h2><ul>
@@ -2290,18 +2328,42 @@ document.querySelectorAll('button[data-act]').forEach((b) => b.addEventListener(
 }));
 // Aufs Video tippen = Play/Pause
 let vPress = null;
+// Vollbild (Robert 13.11.): im Bild nach unten wischen = Bedienung unten ausblenden, nach oben = einblenden;
+// links/rechts wischen spult durchs Footage wie die Zeitleiste (auch bei ausgeblendeter Bedienung).
 $('videoWrap').addEventListener('pointerdown', (e) => {
   if (e.target.closest('button') || (typeof SL !== 'undefined' && SL)) return;
-  vPress = { x: e.clientX, y: e.clientY, long: false };
-  vPress.timer = setTimeout(() => { if (vPress) { vPress.long = true; log('knopf', { act: 'video-lang' }); markAtPlayhead(); } }, MARK_LONGPRESS_MS);
+  vPress = { x: e.clientX, y: e.clientY, long: false, art: null, d0: r2d(S.T), war: S.playing };
+  try { $('videoWrap').setPointerCapture(e.pointerId); } catch { /* egal */ }
+  vPress.timer = setTimeout(() => { if (vPress && !vPress.art) { vPress.long = true; log('knopf', { act: 'video-lang' }); markAtPlayhead(); } }, MARK_LONGPRESS_MS);
 });
-$('videoWrap').addEventListener('pointermove', (e) => { if (vPress && Math.hypot(e.clientX - vPress.x, e.clientY - vPress.y) > 10) { clearTimeout(vPress.timer); vPress = null; } });
+$('videoWrap').addEventListener('pointermove', (e) => {
+  if (!vPress) return;
+  const dx = e.clientX - vPress.x, dy = e.clientY - vPress.y;
+  if (!vPress.art) {
+    if (Math.hypot(dx, dy) <= 10) return;
+    clearTimeout(vPress.timer);
+    if (!S.fs || vPress.long) { vPress = null; return; }
+    vPress.art = Math.abs(dx) > Math.abs(dy) ? 'spulen' : 'hochrunter';
+    if (vPress.art === 'spulen') stopPlay();
+  }
+  if (vPress.art === 'spulen') { S.T = d2r(clamp(vPress.d0 - dx / S.pps, -1, S.axis.total + 1)); showFrame(false); requestDraw(); }
+});
 $('videoWrap').addEventListener('pointerup', (e) => {
   if (!vPress) return; clearTimeout(vPress.timer); e.preventDefault();
-  if (!vPress.long) { log('knopf', { act: 'video-tap' }); ACT.play(); }
+  const dy = e.clientY - vPress.y;
+  if (vPress.art === 'spulen') { showFrame(true); save(); log('video-spulen', {}); }
+  else if (vPress.art === 'hochrunter') { if (dy > 40) uiWeg(true); else if (dy < -40) uiWeg(false); }
+  else if (!vPress.long) { log('knopf', { act: 'video-tap' }); ACT.play(); }
   vPress = null;
 });
 $('videoWrap').addEventListener('pointercancel', () => { if (vPress) clearTimeout(vPress.timer); vPress = null; });
+function uiWeg(weg) {
+  if (weg && !S.fs) return;
+  document.body.classList.toggle('ui-weg', !!weg);
+  log('vollbild-ui', { weg: !!weg });
+  if (weg) toast('Bedienung ausgeblendet – nach oben wischen holt sie zurück', 1800);
+}
+$('uiGriff').onclick = () => uiWeg(false);
 $('videoWrap').addEventListener('contextmenu', (e) => e.preventDefault());
 // ✂ reagiert schon beim Berühren (nicht erst beim Loslassen) – sonst hinkt der Takt hinterher
 $('btnCut').addEventListener('pointerdown', (e) => { e.preventDefault(); cutTap(); });
@@ -2310,7 +2372,7 @@ $('btnCut').addEventListener('pointerdown', (e) => { e.preventDefault(); cutTap(
 function toggleFS(on = !S.fs) {
   S.fs = on;
   document.body.classList.toggle('fs', on);
-  if (!on) document.body.classList.remove('fs-open');
+  if (!on) document.body.classList.remove('fs-open', 'ui-weg');
   const el = document.documentElement;
   try {
     if (on && !document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(() => {});
@@ -2805,7 +2867,7 @@ async function bkFlush(pid, link, silent) {
       // ältere abgelehnte Stände sind durch diesen vollständigen Stand überholt → weg (sonst bleibt „Senden ⚠“ stehen)
       for (let k = q.length - 1; k >= 0; k--) if (q[k].fehler && (q[k].gen || 0) <= (e.gen || 0)) q.splice(k, 1);
       if (S.ps && S.proj && (await projPid(S.proj)) === pid) { S.ps.bkGen = Math.max(S.ps.bkGen || 0, e.gen || 0); save(); }
-      if (!silent) toast('An Blue Tacit gesendet ✓', 2500);
+      if (!silent) { toast('An Blue Tacit gesendet ✓', 2500); setTimeout(pushFragen, 2700); }
     } else {
       if (i >= 0) q[i].fehler = res;
       if (!silent) modal(`<h2>Nicht gesendet</h2><p>${esc(res)}</p><div class="row"><span class="grow"></span><button class="primary" onclick="closeModal()">OK</button></div>`);
