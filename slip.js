@@ -61,7 +61,9 @@ function inhalt(sh) {
   return z ? { c: footClip(z.clip), srcIn: z.src_in, f: z.src_fps, z, t: tempoInhalt(sh, z) } : { c: footClipOf(sh), srcIn: sh.src_in, f: sh.src_fps, z: null, t: tempoInhalt(sh, null) };
 }
 // Tempo des wirksamen Inhalts (gleiche Regel wie vertrag.js tempoOf): Umstellen bringt sein Tempo mit, sonst das des Platzes
-function tempoInhalt(sh, z) { return z && z.von_shot ? (z.tempo || 1) : sh.ersatz ? (sh.tempo || 1) : 1; }
+function tempoInhalt(sh, z) { return z && (z.von_shot || z.wunschtempo) ? (z.tempo || 1) : sh.ersatz ? (sh.tempo || 1) : 1; }
+// v5.1: Wunschtempo (Tempo-Auswahl an der Szene) – null = normal
+function wunschTempo(sh) { const m = shotComment(sh); return m && m.tempo && m.tempo !== 100 ? m.tempo : null; }
 function effSrcIn(sh) { return inhalt(sh).srcIn; }
 const fpsOk = (f) => { const r = f / S.ver.manifest.fps; return Math.abs(r - Math.round(r)) < 1e-6 && Math.round(r) >= 1; };
 // Darf dieser Shot verschoben werden? null = ja, sonst Grund
@@ -113,14 +115,23 @@ async function startSlip(opt) {
   const c = opt ? opt.c : ih.c, f = opt ? c.fps : ih.f;
   if (!c || c.missing || !S.urls.has(c.id)) { toast('Proxy fehlt auf diesem Gerät', 3500); return; }
   const step = Math.max(1, Math.round(f / fps));                  // kleinster sichtbarer Schritt: 1 Sequenzbild
-  const n = !opt && ih.z && Number.isInteger(ih.z.n_src) ? Math.round(ih.z.n_src * f / ih.z.src_fps)
+  // v5.1 (Robert 14.11.): Wunschtempo an der Szene → der Rahmen zeigt nur so viel Inhalt, wie bei diesem Tempo in die Szene passt
+  // (Länge bleibt). Grundtempo = Tempo des Inhalts ohne ein früheres Wunschtempo.
+  const wt = wunschTempo(sh), alt = !opt && ih.z && ih.z.wunschtempo;
+  const tb = alt ? (ih.z.tempo || 1) / (ih.z.wunschtempo / 100) : opt ? 1 : ih.t;
+  const tEff = wt ? +(tb * wt / 100).toFixed(4) : tb;
+  const slotS = (sh.v_out - sh.v_in) / fps;
+  const n = wt || alt ? Math.max(1, Math.round(slotS * tEff * f))
+    : !opt && ih.z && Number.isInteger(ih.z.n_src) ? Math.round(ih.z.n_src * f / ih.z.src_fps)
     : Math.round((sh.src_out - sh.src_in) * f / sh.src_fps), clipFrames = Math.floor(c.dur * f + 1e-6);
   // Grenzen: Shortlist-Bereich (beim Tausch, bewusst erweiterbar) bzw. ganzer Clip
   const zb = !opt && ih.z && ih.z.bereich_frames ? { id: ih.z.bereich, lo: ih.z.bereich_frames[0], hi: ih.z.bereich_frames[1] } : null;
   const bereich = opt ? opt.bereich || null : zb;
   const lo = bereich ? Math.max(0, bereich.lo) : 0, hi = bereich ? Math.min(clipFrames, bereich.hi) : clipFrames;
   const srcIn = opt ? clamp(opt.srcIn, lo, Math.max(lo, hi - n)) : ih.srcIn;
-  SL = { sh, c, f, srcIn, step, n, lo, hi, bereich, fps, tausch: c.id !== sh.clip };
+  const proBild = tEff * f / fps;                                   // Quellbilder je Sequenzbild
+  SL = { sh, c, f, srcIn, step, n, lo, hi, bereich, fps, tausch: c.id !== sh.clip, wt, tEff, topaz: !!wt && proBild < 1 - 1e-6,
+    lastStep: Math.max(1, Math.round(proBild)) };
   SL.base = c.id === sh.clip ? sh.src_in : srcIn;                  // Raster „1 Sequenzbild“ rund um diesen Punkt
   document.body.classList.add('slip');
   $('slipBar').classList.remove('hidden');
@@ -128,7 +139,8 @@ async function startSlip(opt) {
   if (sitzung !== SITZUNG || !SL) return;                          // inzwischen gewechselt
   pv.style.opacity = ''; pv.classList.remove('hidden'); pvLast.classList.remove('hidden'); $('pvBadge').classList.remove('hidden');
   log('slip-start', { shot: sh.id, src_in: SL.srcIn });
-  if (sh.ersatz) toast(sh.ersatz.art === 'topaz' ? '✨ Topaz-Shot: nach der Änderung kommt das Original mit gleicher Zeitlupe rein, markiert „Topaz neu rechnen“' : 'Zeitlupe/Ausschnitt: wird nach der Änderung aus dem Original neu erzeugt', 4500);
+  if (wt) toast(`⏱ Tempo ${wt} %: der Rahmen zeigt nur, was bei diesem Tempo in die Szene passt – Anfangs- und Endbild oben`, 4500);
+  else if (sh.ersatz) toast(sh.ersatz.art === 'topaz' ? '✨ Topaz-Shot: nach der Änderung kommt das Original mit gleicher Zeitlupe rein, markiert „Topaz neu rechnen“' : 'Zeitlupe/Ausschnitt: wird nach der Änderung aus dem Original neu erzeugt', 4500);
   slipResize(); slipUpdate(true); resizeCanvas();
 }
 // auf das Raster „1 Sequenzbild“ rund um den ursprünglichen Start einrasten, innerhalb des Clips bzw. Bereichs
@@ -143,6 +155,7 @@ function slipUpdate(seek) {
   const { sh, srcIn, n, f, c } = SL, grenze = SL.bereich ? 'Bereich' : 'Clip';
   $('slipInfo').innerHTML = `<b>Shot ${+sh.nr}</b> · ${SL.tausch ? `${esc(shotName(sh))} → <b>${esc(c.name || c.id)}</b>` : `${esc(shotName(sh))} · Inhalt <b>${deltaTxt(sh, srcIn)}</b>`}`
     + ` · Quelle ${BTV.fmtS(srcIn / f)}–${BTV.fmtS((srcIn + n) / f)} s`
+    + (SL.wt ? ` · <b>⏱ ${SL.wt} %</b> (${BTV.fmtS(n / f)} s Inhalt${SL.topaz ? ' · Topaz nötig' : ''})` : '')
     + (srcIn <= SL.lo ? ` · <span class="lock">${grenze}anfang</span>` : srcIn >= SL.hi - n ? ` · <span class="lock">${grenze}ende</span>` : '');
   $('slipWhole').classList.toggle('hidden', !SL.bereich);
   slipDraw();
@@ -154,7 +167,7 @@ function slipUpdate(seek) {
     slipSeekT = performance.now();
     // Mitte des Quellbilds ansteuern, das Premiere im Sequenzbild zeigt (bei 50p in 25p das ERSTE des Bildpaars)
     pv.currentTime = (srcIn + 0.5) / f;
-    pvLast.currentTime = (srcIn + n - SL.step + 0.5) / f;
+    pvLast.currentTime = (srcIn + n - (SL.wt ? SL.lastStep : SL.step) + 0.5) / f;
   }
 }
 let slipSeekTimer = null;
@@ -187,16 +200,20 @@ function slipDraw() {
   if (c.id === sh.clip) { const bx = xOfT(sh.src_in / f); g.fillStyle = 'rgba(255,255,255,0.5)'; g.fillRect(bx, 4, 2, h - 8); }
   g.strokeStyle = '#f2c14e'; g.lineWidth = 3; g.strokeRect(winL, 4, winW, h - 8);
   g.fillStyle = '#f2c14e'; g.font = '600 11px -apple-system, Segoe UI, sans-serif';
-  g.fillText('Shot-Länge', winL + 6, h - 8);
+  g.fillText(SL.wt ? `Inhalt bei ${SL.wt} %` : 'Shot-Länge', winL + 6, h - 8);
 }
 function slipApply() {
   const { sh, srcIn, c, f } = SL, cur = inhalt(sh);
   const curB = cur.z && cur.z.bereich_frames ? cur.z.bereich_frames.join('-') : '', newB = SL.bereich ? SL.lo + '-' + SL.hi : '';
-  if (cur.c && cur.c.id === c.id && srcIn === cur.srcIn && curB === newB) { slipClose(); return; }   // nichts geändert
+  const tempoGleich = (SL.wt || null) === ((cur.z && cur.z.wunschtempo) || null);
+  if (cur.c && cur.c.id === c.id && srcIn === cur.srcIn && curB === newB && tempoGleich) { slipClose(); return; }   // nichts geändert
   const z = { clip: c.id, src_in: srcIn, src_fps: f };
   if (SL.bereich) { z.bereich = SL.bereich.id; z.bereich_frames = [SL.lo, SL.hi]; }
   const vz = cur.z && cur.z.von_shot && cur.z.clip === c.id ? cur.z : null;   // v4.9y: umgezogenen Inhalt weiter verschieben
   if (vz) for (const k of ['von_shot', 'von_nr', 'tempo', 'n_src', 'ersatz_art']) if (vz[k] !== undefined) z[k] = vz[k];
+  // v5.1: Wunschtempo geht mit (Inhalt n Quellbilder, Tempo; Länge der Szene bleibt) – Premiere bekommt eine Zeitlupe aus dem Original
+  if (SL.wt) { z.wunschtempo = SL.wt; z.tempo = SL.tEff; z.n_src = SL.n; if (SL.topaz) z.topaz = true; }
+  else if (vz && cur.z.wunschtempo) { z.tempo = +(cur.z.tempo / (cur.z.wunschtempo / 100)).toFixed(4); z.n_src = SL.n; }
   const err = BTV.checkZiel(sh, z, { [c.id]: { dur: c.dur } });
   if (err) { toast(err, 3500); return; }
   const typ = vz ? 'umstellen' : c.id === sh.clip ? 'slip' : 'tausch';

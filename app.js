@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v5.0';
+const APP_VERSION = 'v5.1';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -1465,7 +1465,7 @@ function tempoBereichVersion(T) {
   const hit = sels().find((x) => x.kind === 'range' && x.tempo && x.tempo !== 100 && (() => { const [a, b] = selRange(x); return T >= a && T < b; })());
   if (hit) { const [a, b] = selRange(hit); return { a, b, t: hit.tempo / 100 }; }
   const c = S.clips[0], sg = shotAt(T - c.s), m = sg && shotComment(sg.shot);
-  if (m && m.tempo && m.tempo !== 100) return { a: c.s + sg.a, b: c.s + sg.b, t: m.tempo / 100 };
+  if (m && m.tempo && m.tempo !== 100 && !(typeof effZiel === 'function' && effZiel(sg.shot))) return { a: c.s + sg.a, b: c.s + sg.b, t: m.tempo / 100 };
   return null;
 }
 function tempoVorschau() {
@@ -1586,6 +1586,12 @@ function resizeCanvas() {
   requestDraw();
 }
 window.addEventListener('resize', resizeCanvas);
+/* rechte Karte: Schatten unten, solange darunter noch etwas kommt (v5.1) */
+function karteMehr() { const el = $('current'); if (el) el.classList.toggle('mehr', el.scrollHeight - el.scrollTop - el.clientHeight > 4); }
+$('current').addEventListener('scroll', karteMehr, { passive: true });
+new ResizeObserver(karteMehr).observe($('current'));
+new MutationObserver(() => requestAnimationFrame(karteMehr)).observe($('current'), { childList: true, subtree: true });
+
 /* ---------- Musik-Wellenform (v5.0, Robert 14.11.: „Musikspur mit Ausschlägen sehen, damit man besser die Cuts setzen kann“) ----------
  * version_export.py legt sie ins Manifest (musik_wellen: 50 Werte/s aus den Musik-Clips der Sequenz, sonst aus dem Ton der Version).
  * Eigene Zeile unter der Version; die Schnitte der Version laufen als feine Linien durch, Tippen dort wirkt wie auf der Version. */
@@ -2992,6 +2998,7 @@ $('btnCut').addEventListener('pointerdown', (e) => { e.preventDefault(); cutTap(
 /* ---------- Vollbild ---------- */
 function toggleFS(on = !S.fs) {
   S.fs = on;
+  S.fsEndeGewollt = !on;
   document.body.classList.toggle('fs', on);
   if (!on) document.body.classList.remove('fs-open', 'ui-weg');
   const el = document.documentElement;
@@ -3002,7 +3009,26 @@ function toggleFS(on = !S.fs) {
   log('vollbild', { an: on });
   setTimeout(resizeCanvas, 60); setTimeout(resizeCanvas, 400);
 }
-document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && S.fs) toggleFS(false); });
+// v5.1 (Robert 14.11.): Am iPad beendet das System-Wischen nach unten das Browser-Vollbild, obwohl man nur die Bedienung wegziehen
+// wollte. Auf Touch-Geräten bleibt Framepoints Vollbild deshalb stehen und die Bedienung wird ausgeblendet; beenden nur mit ⤡.
+const TOUCH = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 1;
+document.addEventListener('fullscreenchange', () => {
+  if (document.fullscreenElement || !S.fs) return;
+  if (TOUCH && !S.fsEndeGewollt) { log('vollbild-system-ende', {}); uiWeg(true); return; }
+  toggleFS(false);
+});
+// Nach unten wischen auf der Bedienung (Zeitleiste, Knöpfe) blendet sie aus – wie im Bild
+let uiWisch = null;
+document.addEventListener('pointerdown', (e) => {
+  uiWisch = S.fs && !document.body.classList.contains('ui-weg') && e.target.closest('.tl-wrap, .seq-wrap, .transport, .fs-mini, .tc')
+    && !e.target.closest('button, input, select, textarea') ? { x: e.clientX, y: e.clientY, t: performance.now() } : null;
+}, true);
+document.addEventListener('pointerup', (e) => {
+  if (!uiWisch) return;
+  const dx = e.clientX - uiWisch.x, dy = e.clientY - uiWisch.y, schnell = performance.now() - uiWisch.t < 600;
+  uiWisch = null;
+  if (schnell && dy > 70 && Math.abs(dx) < dy * 0.5) uiWeg(true);
+}, true);
 
 /* ---------- Log ansehen ---------- */
 function showLog() {

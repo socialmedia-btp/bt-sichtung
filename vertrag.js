@@ -16,7 +16,7 @@
       if (e.typ === 'slip' || e.typ === 'tausch' || e.typ === 'umstellen') ziel = { ...e.ziel, change_id: e.change_id };
       else if (e.typ === 'reset') ziel = null;
     }
-    if (ziel && !ziel.von_shot && ziel.clip === shot.clip && ziel.src_in === shot.src_in) return null;
+    if (ziel && !ziel.von_shot && !ziel.wunschtempo && ziel.clip === shot.clip && ziel.src_in === shot.src_in) return null;
     return ziel;
   }
   function markerText(version, shot, a) {
@@ -34,6 +34,10 @@
   // Zusatz für Zeitlupe/Topaz (v4.9x Ersatzmedium, v4.9y Umstellen: Art des umgezogenen Inhalts) – gleich wie bt_v4.ersatz_text
   function ersatzText(shot, a) {
     const um = a.typ === 'umstellen';
+    if (a.wunschtempo) {   // v5.1: Wunschtempo beim Verschieben – Länge bleibt, weniger/mehr Inhalt
+      const art0 = um ? a.ersatz_art : shot.ersatz ? shot.ersatz.art : null;
+      return ` · Tempo ${a.wunschtempo} % → ${fmtS(a.tempo || 1)}×` + (a.topaz_noetig || art0 === 'topaz' ? ' · TOPAZ NEU RECHNEN' : '');
+    }
     if (!um && !shot.ersatz) return '';
     const art = um ? a.ersatz_art : shot.ersatz.art, t = a.tempo || 1;
     return (Math.abs(t - 1) > 1e-3 ? ` · Zeitlupe ${fmtS(t)}×` : '')
@@ -41,11 +45,11 @@
   }
   // Quellbilder des neuen Inhalts (v4.9y: Umstellen bringt seine eigene Länge n_src mit – Platzlänge × Tempo des Inhalts)
   const nSrcOf = (shot, z) => (Number.isInteger(z.n_src) ? z.n_src : Math.round((shot.src_out - shot.src_in) * z.src_fps / shot.src_fps));
-  const tempoOf = (shot, z) => (z.von_shot ? (z.tempo || 1.0) : shot.ersatz ? (shot.tempo || 1.0) : 1.0);
+  const tempoOf = (shot, z) => (z.von_shot || z.wunschtempo ? (z.tempo || 1.0) : shot.ersatz ? (shot.tempo || 1.0) : 1.0);
   function auftrag(version, shot, z, revision = 1) {
     const typ = z.von_shot ? 'umstellen' : z.clip === shot.clip ? 'slip' : 'tausch';
     const nSrc = shot.src_out - shot.src_in;
-    const zOut = typ === 'slip' ? z.src_in + nSrc : z.src_in + nSrcOf(shot, z);
+    const zOut = typ === 'slip' && !z.wunschtempo ? z.src_in + nSrc : z.src_in + nSrcOf(shot, z);
     const a = {
       change_id: z.change_id, revision, typ, shot: shot.id, nr: shot.nr, v_in: shot.v_in, v_out: shot.v_out,
       vorher: { clip: shot.clip, src_in: shot.src_in, src_out: shot.src_out, src_fps: shot.src_fps },
@@ -53,6 +57,7 @@
       tempo: tempoOf(shot, z), audio_policy: 'keep_version_audio', folgen: [...(shot.folgen || [])], pruefung: [],
     };
     if (Array.isArray(z.bereich_frames)) a.nachher.bereich_frames = [...z.bereich_frames];
+    if (z.wunschtempo) { a.wunschtempo = z.wunschtempo; if (z.topaz) a.topaz_noetig = true; }
     if (typ === 'umstellen') {
       a.nachher.von_shot = z.von_shot; a.nachher.von_nr = z.von_nr;
       if (z.ersatz_art) a.ersatz_art = z.ersatz_art;
