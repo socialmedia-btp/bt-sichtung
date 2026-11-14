@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9y';
+const APP_VERSION = 'v4.9z';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -3438,9 +3438,11 @@ async function bkSendenFragen() {
   if (rec || recStarting) { toast('Erst die Sprachnotiz beenden'); return; }
   const pid = await projPid(S.proj), link = await bkLink(pid);
   if (!link) return;
-  if (link.team === undefined) {
-    try { const r = await (await fetch(`${link.url}/v1/link?k=${encodeURIComponent(link.key)}`)).json(); if (r && r.ok) { link.team = !!r.rohmaterial; await DB.put('state', link, '__bk__' + pid); } } catch { /* offline */ }
-  }
+  // Link-Angaben frisch holen (Gruppe, v4.9z: „Musik schon da“) – offline gilt der zuletzt gemerkte Stand
+  try {
+    const r = await (await fetch(`${link.url}/v1/link?k=${encodeURIComponent(link.key)}`)).json();
+    if (r && r.ok) { link.team = !!r.rohmaterial; link.musik_da = !!r.musik_da; await DB.put('state', link, '__bk__' + pid); }
+  } catch { /* offline */ }
   if (link.abgeschlossen || (S.ps && S.ps.abgeschlossen)) return abgeschlossenFenster(link);
   const hatVersion = !!(S.ps && S.ps.versions.length);
   const abschlussKnopf = hatVersion ? `<button id="bsAbschluss" class="pn-rec" style="background:var(--panel2)">🏁 Projekt abschließen – Endergebnis passt</button>` : '';
@@ -3456,7 +3458,9 @@ async function bkSendenFragen() {
     return;
   }
   // Musik schon gewählt (Robert 13.11.) → „fertig“ fordert keine Musik mehr an; der Stand trägt musik_bitte: false
-  let musikDa = !!(muDaten && muDaten.wahl && Object.keys(muDaten.wahl).length);
+  // v4.9z (Robert 14.11.): Musik ist auch da, wenn der Link es sagt oder eine Schnittversion schon Musik im Ton hat
+  let musikDa = !!link.musik_da || (S.ps.versions || []).some((v) => v.manifest && v.manifest.musik)
+    || !!(muDaten && muDaten.wahl && Object.keys(muDaten.wahl).length);
   if (!musikDa) { try { const r = await fetch(`${link.url}/v1/musik?k=${encodeURIComponent(link.key)}`); const j = r.ok ? await r.json() : null; musikDa = !!(j && j.musik && j.musik.wahl && Object.keys(j.musik.wahl).length); } catch { /* offline */ } }
   const fertigTxt = musikDa ? '✅ Sichtung fertig' : '✅ Sichtung fertig – Musik bitte';
   modal(`<h2>An Blue Tacit senden</h2>
@@ -3465,7 +3469,7 @@ async function bkSendenFragen() {
     <button id="bsZwischen" class="pn-rec" style="background:var(--panel2)">Zwischenstand sichern</button>
     <button id="bsFertig" class="gold pn-rec">${fertigTxt}</button>${abschlussKnopf}
     <p class="hint">„Sichtung fertig“ erst tippen, wenn du alles durchgesehen und deine Projektnotizen aufgenommen hast. ${musikDa
-      ? 'Die Musik ist schon ausgewählt – es wird keine neue gesucht.' : 'Dann sucht Blue Tacit die Musik und du bekommst Bescheid.'}${hatVersion
+      ? 'Musik ist schon da – es wird keine neue gesucht.' : 'Dann sucht Blue Tacit die Musik und du bekommst Bescheid.'}${hatVersion
       ? ' „Projekt abschließen“ = das Video ist fertig: du wählst, wofür du es brauchst, und bekommst die Datei als OneDrive-Link.' : ''}</p>
     <div class="row"><span class="grow"></span><button onclick="closeModal()">Abbrechen</button></div>`, (b) => {
     b.querySelector('#bsZwischen').onclick = () => { closeModal(); log('senden-zwischen', {}); bkSend(false); };
