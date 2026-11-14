@@ -293,6 +293,9 @@ body.fs.ui-weg .ui-griff { display: block; position: fixed; left: 50%; bottom: c
 .pv { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: transparent; pointer-events: none; opacity: 0; z-index: 1; }
 body.slip .pv { opacity: 1; }
 #pvLastWrap { position: absolute; right: 10px; bottom: 10px; width: 30%; z-index: 2; pointer-events: none; }
+/* v5.0: Tempo-Vorschau in der Schnittversion – stummes Video über der normal weiterlaufenden Version */
+.vtempo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; pointer-events: none; z-index: 1; }
+body.slip .vtempo, body.slip #tempoBadge { display: none; }
 .pv-last { width: 100%; border: 2px solid #f2c14e; border-radius: 8px; background: #000; display: block; }
 #pvLastWrap::before { content: 'letztes Bild'; position: absolute; left: 6px; top: 4px; font-size: 11px; color: #fff; text-shadow: 0 1px 3px #000; z-index: 1; }
 #pvLastWrap:has(.hidden) { display: none; }

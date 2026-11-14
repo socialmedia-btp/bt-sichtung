@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9z';
+const APP_VERSION = 'v5.0';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -790,6 +790,7 @@ function updateNoteTarget() {
   el.classList.add('on');
 }
 function updateHud(c) {
+  tempoVorschau();
   const fps = c ? c.fps : 25;
   const tr = c && S.tracks.find((t) => t.id === c.track);
   const sg = c && S.ver ? shotAt(S.T - c.s) : null;
@@ -841,6 +842,7 @@ function stopPlay() {
   S.playing = false; setPlayIcons(false);
   clearInterval(S.playTimer); clearTimeout(S.switchTimer); video.removeEventListener('seeked', resumeAfterSwitch);
   S.switching = false; video.pause(); save();
+  tempoVorschau();
   log('stop', vstate());
   if (CUT.rec) setTimeout(stopCutRec, 0);
   // Shortlist-Sequenz bleibt beim Anhalten offen (eigene Ansicht mit eigenem Abspielkopf, Robert 10.11.) – schließen nur mit ✕
@@ -1447,16 +1449,59 @@ function tempoBind(box, zielFn, fpsFn) {
     if (t === 100) { delete ziel.tempo; delete ziel.tempoInfo; } else { ziel.tempo = t; ziel.tempoInfo = tempoInfo(t, fpsFn()); }
     log('tempo', { zu: ziel.id, t });
     changed();
-    if (t !== 100) toast(t < 100 ? `⏱ ${t} % – Vorschau läuft langsamer (nicht flüssig, nur zur Orientierung)` : `⏱ ${t} % – Vorschau läuft schneller`, 3000);
+    if (t !== 100) toast(S.ver ? `⏱ ${t} % – nur das Bild wird ${t < 100 ? 'langsamer' : 'schneller'}, Musik und Länge bleiben${t < 100 ? ` (man sieht ${t} % der Szene)` : ''}`
+      : t < 100 ? `⏱ ${t} % – Vorschau läuft langsamer (nicht flüssig, nur zur Orientierung)` : `⏱ ${t} % – Vorschau läuft schneller`, 3500);
+    tempoVorschau();
   };
 }
-// Tempo am Abspielzeiger: Bereich mit Tempo (aktive Spur zuerst) bzw. Szene der Version; beim Cut-Takt immer 100 %
+/* Tempo in der Schnittversion (v5.0, Robert 14.11.: „Musik und Takt sollen gleich bleiben, nur das Footage langsamer“):
+ * Die Version läuft normal weiter (Ton, Zeitleiste, Länge). Über ihr spielt ein stummes zweites Video die Szene ab ihrem
+ * Anfang im Wunschtempo – bei 70 % sieht man also nur die ersten 70 % des Inhalts; über 100 % bleibt am Szenenende das letzte Bild stehen
+ * (mehr Inhalt als die Szene hat die Version nicht). */
+const vTempo = $('vTempo');
+let VT = null;
+function tempoBereichVersion(T) {
+  if (!S.ver || CUT.rec || CUT.countdown || !S.clips[0]) return null;
+  const hit = sels().find((x) => x.kind === 'range' && x.tempo && x.tempo !== 100 && (() => { const [a, b] = selRange(x); return T >= a && T < b; })());
+  if (hit) { const [a, b] = selRange(hit); return { a, b, t: hit.tempo / 100 }; }
+  const c = S.clips[0], sg = shotAt(T - c.s), m = sg && shotComment(sg.shot);
+  if (m && m.tempo && m.tempo !== 100) return { a: c.s + sg.a, b: c.s + sg.b, t: m.tempo / 100 };
+  return null;
+}
+function tempoVorschau() {
+  const B = tempoBereichVersion(S.T), c = S.clips[0], u = c && S.urls.get(c.id);
+  if (!B || !u) {
+    if (VT) { VT = null; vTempo.pause(); vTempo.classList.add('hidden'); $('tempoBadge').classList.add('hidden'); }
+    return;
+  }
+  if (vTempo.dataset.u !== u) { vTempo.src = u; vTempo.dataset.u = u; }
+  const ende = B.b - c.s - 0.5 / (c.fps || 25);
+  const soll = clamp(B.a - c.s + (S.T - B.a) * B.t, 0, ende);
+  const neu = !VT || VT.a !== B.a || VT.t !== B.t;
+  if (neu) {
+    log('tempo-vorschau', { t: B.t, a: +B.a.toFixed(2) });
+    $('tempoBadge').textContent = `⏱ ${Math.round(B.t * 100)} % · Musik läuft normal`;
+    $('tempoBadge').classList.remove('hidden'); vTempo.classList.remove('hidden');
+  }
+  VT = B;
+  if (vTempo.readyState < 1) { vTempo.addEventListener('loadedmetadata', () => tempoVorschau(), { once: true }); return; }
+  if (S.playing && soll < ende) {
+    if (Math.abs(vTempo.playbackRate - B.t) > 1e-3) { try { vTempo.playbackRate = B.t; } catch { /* Gerät kann das Tempo nicht */ } }
+    if (neu || Math.abs(vTempo.currentTime - soll) > 0.3) vTempo.currentTime = soll;
+    if (vTempo.paused) vTempo.play().catch((e) => log('tempo-play', { name: e.name }));
+  } else {
+    if (!vTempo.paused) vTempo.pause();
+    if (Math.abs(vTempo.currentTime - soll) > 0.02) vTempo.currentTime = soll;
+  }
+}
+// Tempo am Abspielzeiger: Bereich mit Tempo (aktive Spur zuerst); beim Cut-Takt immer 100 %
+// (in der Schnittversion bleibt die Version selbst auf 100 % – das Tempo zeigt tempoVorschau)
 function tempoAt(T) {
   if (CUT.rec || CUT.countdown) return 100;
+  if (S.ver) return 100;
   const hits = sels().filter((x) => x.kind === 'range' && x.tempo && (() => { const [a, b] = selRange(x); return T >= a && T <= b; })());
   const h = hits.find((x) => x.track === S.activeTrack) || hits[0];
   if (h) return h.tempo;
-  if (S.ver) { const sg = shotAt(T - S.clips[0].s); const m = sg && shotComment(sg.shot); if (m && m.tempo) return m.tempo; }
   return 100;
 }
 
@@ -1541,12 +1586,53 @@ function resizeCanvas() {
   requestDraw();
 }
 window.addEventListener('resize', resizeCanvas);
+/* ---------- Musik-Wellenform (v5.0, Robert 14.11.: „Musikspur mit Ausschlägen sehen, damit man besser die Cuts setzen kann“) ----------
+ * version_export.py legt sie ins Manifest (musik_wellen: 50 Werte/s aus den Musik-Clips der Sequenz, sonst aus dem Ton der Version).
+ * Eigene Zeile unter der Version; die Schnitte der Version laufen als feine Linien durch, Tippen dort wirkt wie auf der Version. */
+const WAVE_H = 40;
+const WELLEN = new WeakMap();
+function wellen() {
+  const w = S.ver && S.ver.manifest && S.ver.manifest.musik_wellen;
+  if (!w || !w.daten) return null;
+  let d = WELLEN.get(S.ver);
+  if (!d || d.src !== w.daten) {
+    const b = atob(w.daten), a = new Uint8Array(b.length);
+    for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i);
+    d = { src: w.daten, a, hz: w.hz || 50, quelle: w.quelle };
+    WELLEN.set(S.ver, d);
+  }
+  return d;
+}
 function laneGeom() {
   const h = cv.height / (window.devicePixelRatio || 1);
   const nt = ((S.state && S.state.takes) ? S.state.takes.length : 0) + (CUT.rec ? 1 : 0);
-  const lh = Math.max(30, Math.min(70, (h - RULER - 6 - COM_H - nt * TAKE_H) / S.tracks.length));
-  const cy = RULER + 4 + S.tracks.length * lh;
-  return { lh, y: (i) => RULER + 4 + i * lh, cy, ty: (k) => cy + COM_H + k * TAKE_H, nt };
+  const wh = wellen() ? WAVE_H : 0;
+  const lh = Math.max(30, Math.min(70, (h - RULER - 6 - COM_H - wh - nt * TAKE_H) / S.tracks.length));
+  const wy = RULER + 4 + S.tracks.length * lh, cy = wy + wh;
+  return { lh, y: (i) => RULER + 4 + i * lh, wy, wh, cy, ty: (k) => cy + COM_H + k * TAKE_H, nt };
+}
+function drawWellen(w, FS) {
+  const WV = wellen(); if (!WV || !S.clips[0]) return;
+  const G = laneGeom(), yy = G.wy + 1, hh = G.wh - 6, mid = yy + hh / 2, c0 = S.clips[0].s, n = WV.a.length;
+  ctx.fillStyle = FS ? 'rgba(255,255,255,0.04)' : '#141619'; ctx.fillRect(HEAD, yy, w - HEAD, hh);
+  ctx.fillStyle = FS ? 'rgba(94,214,160,0.8)' : '#5ed6a0';
+  const step = 2;
+  for (let x = HEAD; x < w; x += step) {
+    let i0 = Math.floor((rOfX(x) - c0) * WV.hz), i1 = Math.floor((rOfX(x + step) - c0) * WV.hz);
+    if (i1 <= i0) i1 = i0 + 1;
+    if (i1 <= 0 || i0 >= n) continue;
+    i0 = Math.max(0, i0); i1 = Math.min(n, i1);
+    let m = 0; for (let i = i0; i < i1; i++) if (WV.a[i] > m) m = WV.a[i];
+    if (!m) continue;
+    const v = Math.max(0.5, Math.pow(m / 255, 1.6) * hh / 2);
+    ctx.fillRect(x, mid - v, step - 0.5, 2 * v);
+  }
+  if (S.vsegs) {   // Schnitte der Version
+    ctx.fillStyle = 'rgba(255,255,255,0.45)';
+    for (const sg of S.vsegs) { const x = xOf(c0 + sg.a); if (x >= HEAD && x <= w) ctx.fillRect(x, yy, 1, hh); }
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.55)'; ctx.font = '600 10px -apple-system, Segoe UI, sans-serif';
+  ctx.fillText(WV.quelle === 'mix' ? '♪ Ton' : '♪ Musik', HEAD + 4, yy + 11);
 }
 const W = () => cv.width / (window.devicePixelRatio || 1);
 // Beim Ziehen eines In/Out-Griffs bleibt die Ansicht stehen (viewLock), sonst läuft sie mit dem Playhead
@@ -1625,6 +1711,8 @@ function draw() {
       ctx.shadowBlur = 0;
     }
   }
+
+  drawWellen(w, FS);
 
   // Fangzonen der aktiven Spur: dezent; die Zone unter dem Abspielkopf deutlich mit „IN“/„OUT“
   {
@@ -1851,6 +1939,7 @@ function hit(x, y) {
     return { type: 'take', take: tk };
   }
   const { lh, y: ly } = G;
+  if (G.wh && y >= G.wy && y < G.cy) return hit(x, ly(0) + lh / 2);   // Musik-Wellenform wirkt wie die Version
   const ti = Math.floor((y - RULER - 4) / lh);
   const track = S.tracks[ti];
   if (x < HEAD) return { type: 'head', track };
