@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v5.2';
+const APP_VERSION = 'v5.3';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -1643,8 +1643,19 @@ function drawWellen(w, FS) {
   ctx.fillStyle = FS ? 'rgba(255,255,255,0.04)' : '#141619'; ctx.fillRect(HEAD, yy, w - HEAD, hh);
   // ganze Musik gedämpft, darüber hell der Bass (Bassdrum/Beat, v5.2) – daran lassen sich Cuts auf den Takt setzen
   const step = 2;
+  // v5.3 (Robert 15.11.: „Ausschläge künstlich erweitern“): Verstärkung passt sich dem Ausschnitt an (sichtbar ± 6 s) –
+  // das leise Grundrauschen der Stelle wird zur Nulllinie, der lauteste Schlag füllt die ganze Höhe. Zeigt Unterschiede, nicht die echte Lautstärke.
+  const tL = rOfX(HEAD) - c0 - 6, tR = rOfX(w) - c0 + 6;
   const spur = (arr, farbe, exp) => {
     if (!arr) return;
+    const j0 = clamp(Math.floor(tL * WV.hz), 0, n), j1 = clamp(Math.ceil(tR * WV.hz), 0, n);
+    if (j1 <= j0) return;
+    let hi = 0; const proben = [];
+    const sp = Math.max(1, Math.floor((j1 - j0) / 400));
+    for (let i = j0; i < j1; i++) { if (arr[i] > hi) hi = arr[i]; if ((i - j0) % sp === 0 && arr[i]) proben.push(arr[i]); }
+    if (!hi) return;
+    proben.sort((p, q) => p - q);
+    const lo = Math.min(hi * 0.8, proben.length ? proben[Math.floor(proben.length * 0.15)] : 0);
     ctx.fillStyle = farbe;
     for (let x = HEAD; x < w; x += step) {
       let i0 = Math.floor((rOfX(x) - c0) * WV.hz), i1 = Math.floor((rOfX(x + step) - c0) * WV.hz);
@@ -1653,12 +1664,12 @@ function drawWellen(w, FS) {
       i0 = Math.max(0, i0); i1 = Math.min(n, i1);
       let m = 0; for (let i = i0; i < i1; i++) if (arr[i] > m) m = arr[i];
       if (!m) continue;
-      const v = Math.max(0.5, Math.pow(m / 255, exp) * hh / 2);
+      const v = Math.max(0.5, Math.pow(clamp((m - lo) / (hi - lo || 1), 0, 1), exp) * hh / 2);
       ctx.fillRect(x, mid - v, step - 0.5, 2 * v);
     }
   };
-  spur(WV.a, WV.bass ? (FS ? 'rgba(94,214,160,0.45)' : '#2f6b55') : (FS ? 'rgba(94,214,160,0.8)' : '#5ed6a0'), 1.6);
-  spur(WV.bass, FS ? 'rgba(160,255,200,0.9)' : '#7dffc0', 2.2);
+  spur(WV.a, WV.bass ? (FS ? 'rgba(94,214,160,0.45)' : '#2f6b55') : (FS ? 'rgba(94,214,160,0.8)' : '#5ed6a0'), 1.3);
+  spur(WV.bass, FS ? 'rgba(160,255,200,0.9)' : '#7dffc0', 1.6);
   if (S.vsegs) {   // Schnitte der Version
     ctx.fillStyle = 'rgba(255,255,255,0.45)';
     for (const sg of S.vsegs) { const x = xOf(c0 + sg.a); if (x >= HEAD && x <= w) ctx.fillRect(x, yy, 1, hh); }
