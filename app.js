@@ -203,7 +203,7 @@ const angebotHtml = ({ v }, i) => `<div class="proj neu"><div class="info"><div 
   <div class="meta">${esc(v.projekt || '')} · neue Version zum Prüfen · ${durTxt(v.dauer || 0)} · ${(v.bytes / 1e6).toFixed(0)} MB</div></div>
   <button class="primary" data-laden="${i}">Laden</button></div>`;
 const fertigHtml = (l, i) => `<div class="proj"><div class="info"><div class="name">🏁 ${esc(l.projekt || (l.aufgeraeumt && l.aufgeraeumt.projekt) || 'Projekt')}</div>
-  <div class="meta">abgeschlossen · nichts mehr auf diesem Gerät gespeichert</div></div>
+  <div class="meta">abgeschlossen · nichts mehr auf diesem Gerät gespeichert${l.aufgeraeumt && l.aufgeraeumt.bytes ? ` (${mbGb(l.aufgeraeumt.bytes)} freigegeben)` : ''}</div></div>
   <button class="primary" data-fin="${i}">Final-Links</button><button class="ghost danger" data-finweg="${i}" title="Eintrag entfernen">✕</button></div>`;
 let angebotLauf = 0;
 async function bkAngeboteZeigen() {
@@ -3349,7 +3349,7 @@ function finFenster(fd = finDaten, link = null) {
       href="${esc(d.url)}" target="_blank" rel="noopener">⬇ ${esc(name[d.zweck] || d.zweck)}${d.bytes ? ` · ${(d.bytes / 1e6).toFixed(0)} MB` : ''}</a>`).join('')}
     ${aufrOk ? '<button id="finAufr" class="pn-rec" style="background:var(--panel2)">🧹 Alles löschen &amp; Speicher freigeben</button>' : ''}
     <div class="row"><span class="grow"></span><button class="primary" onclick="closeModal()">OK</button></div>`, (b) => {
-    const a = b.querySelector('#finAufr'); if (a) a.onclick = () => aufraeumenFragen();
+    const a = b.querySelector('#finAufr'); if (a) { a.onclick = () => aufraeumenFragen(); aufrKnopfBeschriften(b); }
   });
   if (S.ps && !link) { S.ps.finalGesehen = fd.erstellt; save(); }
   $('btnFinal').classList.remove('neu');
@@ -3359,6 +3359,27 @@ function finFenster(fd = finDaten, link = null) {
  * Gerät alles zum Projekt (Footage, Versionen, Sprachnotizen, Anhänge, Stand) und im Briefkasten Versionen, Notizen, Musik und Stände
  * (POST /v1/aufraeumen; vor dem Melden der Final-Dateien merkt er es sich). Übrig bleibt nur die Startseiten-Kachel „🏁 abgeschlossen“
  * mit den Final-Links (✕ entfernt auch die). Ohne Aufräumen löschen sich die Daten im Briefkasten nach 30–60 Tagen von selbst. */
+// Belegter Speicher (Robert 14.11.: „wie viel Speicher in Anspruch genommen worden ist“): Dateien des Projekts + Notizen/Anhänge
+async function geraetBytes(proj) {
+  let bytes = 0;
+  for (const k of (await DB.keys('files')).filter((k) => String(k).startsWith(proj.id + '/'))) { const b = await DB.get('files', k).catch(() => null); bytes += (b && b.size) || 0; }
+  for (const id of notizIds(await DB.get('state', proj.id).catch(() => null))) { const b = await DB.get('notes', id).catch(() => null); bytes += (b && b.size) || 0; }
+  return bytes;
+}
+function notizIds(st) {
+  const ids = new Set();
+  const lauf = (o) => { if (Array.isArray(o)) o.forEach(lauf); else if (o && typeof o === 'object') { if (typeof o.id === 'string' && (o.mime || o.art || o.dur !== undefined)) ids.add(o.id); Object.values(o).forEach(lauf); } };
+  lauf(st);
+  return ids;
+}
+async function briefkastenBytes(link) {   // Versionen des Projekts im Briefkasten (Notizen sind klein)
+  try { const j = await (await fetch(`${link.url}/v1/versionen?k=${encodeURIComponent(link.key)}`)).json(); return (j.versionen || []).reduce((a, v) => a + (v.bytes || 0), 0); } catch { return null; }
+}
+async function aufrKnopfBeschriften(b) {   // „🧹 Alles löschen & 1,24 GB freigeben“
+  const k = b && b.querySelector('#agAufr, #finAufr'); if (!k || !S.proj) return;
+  const n = await geraetBytes(S.proj).catch(() => 0);
+  if (k.isConnected) k.innerHTML = `🧹 Alles löschen &amp; ${mbGb(n)} freigeben`;
+}
 async function abgeschlossenMerken(info) {
   const pid = S.proj ? await projPid(S.proj) : null, link = pid ? await bkLink(pid) : null;
   if (link && !link.abgeschlossen) { link.abgeschlossen = info; await DB.put('state', link, '__bk__' + pid); }
@@ -3371,34 +3392,35 @@ function abgeschlossenFenster(link) {
     ${finDaten ? 'Deine Final-Dateien liegen bereit.' : 'Blue Tacit erstellt die Final-Dateien – du bekommst eine Mitteilung mit dem Link.'}</p>
     ${finDaten ? '<button id="agFinal" class="gold pn-rec">🏁 Final-Dateien öffnen</button>' : ''}
     <button id="agAufr" class="pn-rec" style="background:var(--panel2)">🧹 Alles löschen &amp; Speicher freigeben</button>
-    <p class="hint">Löscht alle Videos, Versionen und Sprachnotizen dieses Projekts von diesem Gerät und aus dem Blue-Tacit-Briefkasten.
-    Die Final-Dateien in OneDrive bleiben.</p>
+    <p class="hint">Löscht alle Videos, Versionen und Sprachnotizen, die Framepoint für dieses Projekt auf diesem Gerät geladen hat, und
+    die Daten im Blue-Tacit-Briefkasten. In OneDrive wird nichts gelöscht – die Final-Dateien bleiben.</p>
     <div class="row"><span class="grow"></span><button onclick="closeModal()">Schließen</button></div>`, (b) => {
     const f = b.querySelector('#agFinal'); if (f) f.onclick = () => finFenster();
     b.querySelector('#agAufr').onclick = () => aufraeumenFragen();
+    aufrKnopfBeschriften(b);
   });
 }
 async function aufraeumenFragen() {
   const proj = S.proj; if (!proj) return;
   const pid = await projPid(proj), link = await bkLink(pid);
   if ((await bkQ(pid)).length) { toast('Erst muss alles gesendet sein (Internet?) – dann nochmal', 4000); bkRetry(); return; }
-  const keys = (await DB.keys('files')).filter((k) => String(k).startsWith(proj.id + '/'));
-  let bytes = 0; for (const k of keys) { const b = await DB.get('files', k).catch(() => null); bytes += (b && b.size) || 0; }
+  const bytes = await geraetBytes(proj), bkBytes = link ? await briefkastenBytes(link) : null;
   modal(`<h2>🧹 Alles löschen?</h2>
-    <p>Auf diesem Gerät werden <b>${mbGb(bytes)}</b> frei: alle Videos, Versionen, Sprachnotizen, Anhänge und dein Stand zu
-    „${esc(proj.meta.name)}“. Im Blue-Tacit-Briefkasten werden die Versionen und gesendeten Daten gelöscht.</p>
-    <p class="hint">Die Final-Dateien in OneDrive bleiben – die Links findest du weiter auf der Startseite unter „🏁 abgeschlossen“.
-    Das lässt sich nicht rückgängig machen.</p>
+    <p>Belegt sind <b>${mbGb(bytes)}</b> auf diesem Gerät${bkBytes ? ` und <b>${mbGb(bkBytes)}</b> im Blue-Tacit-Briefkasten` : ''}.</p>
+    <p>Gelöscht wird alles, was Framepoint zu „${esc(proj.meta.name)}“ geladen hat: Videos, Versionen, Sprachnotizen, Anhänge und dein Stand –
+    hier auf dem Gerät und im Briefkasten.</p>
+    <p class="hint"><b>In OneDrive wird nichts gelöscht.</b> Die Final-Dateien bleiben, die Links findest du weiter auf der Startseite unter
+    „🏁 abgeschlossen“. Das Löschen lässt sich nicht rückgängig machen.</p>
     <div class="row"><button onclick="closeModal()">Abbrechen</button><span class="grow"></span><button id="aufrJa" class="primary danger">Alles löschen</button></div>`, (b) => {
     b.querySelector('#aufrJa').onclick = async () => {
       b.querySelector('#aufrJa').disabled = true; b.querySelector('#aufrJa').textContent = 'Lösche …';
       let server = 'offline';
       if (link) { try { const r = await fetch(`${link.url}/v1/aufraeumen?k=${encodeURIComponent(link.key)}`, { method: 'POST' }); const j = await r.json(); server = j.ok ? (j.sofort ? 'geloescht' : 'vorgemerkt') : 'fehler'; } catch { /* offline: Briefkasten löscht selbst nach 30–60 Tagen */ } }
       await geraetLeeren(proj);
-      if (link) { link.aufgeraeumt = { zeit: new Date().toISOString(), server, bytes, projekt: proj.meta.name }; link.abgeschlossen = link.abgeschlossen || {}; await DB.put('state', link, '__bk__' + pid); }
+      if (link) { link.aufgeraeumt = { zeit: new Date().toISOString(), server, bytes, bk_bytes: bkBytes, projekt: proj.meta.name }; link.abgeschlossen = link.abgeschlossen || {}; await DB.put('state', link, '__bk__' + pid); }
       log('aufraeumen', { mb: Math.round(bytes / 1e6), server });
       S.proj = null; S.ps = null; S.state = null; S.ver = null; closeModal();
-      toast(`🧹 ${mbGb(bytes)} freigegeben${server === 'offline' ? ' (Briefkasten löscht sich in 30–60 Tagen selbst)' : ''} ✓`, 4000);
+      toast(`🧹 ${mbGb(bytes)} auf dem Gerät freigegeben${server === 'offline' ? ' (Briefkasten löscht sich in 30–60 Tagen selbst)' : bkBytes ? ` · ${mbGb(bkBytes)} im Briefkasten` : ''} ✓`, 5000);
       showHome();
     };
   });
@@ -3409,10 +3431,7 @@ async function geraetLeeren(proj) {
   stopPlay();
   for (const k of (await DB.keys('files')).filter((k) => String(k).startsWith(proj.id + '/'))) await DB.del('files', k).catch(() => {});
   const st = await DB.get('state', proj.id).catch(() => null);
-  const ids = new Set();
-  const lauf = (o) => { if (Array.isArray(o)) o.forEach(lauf); else if (o && typeof o === 'object') { if (typeof o.id === 'string' && (o.mime || o.art || o.dur !== undefined)) ids.add(o.id); Object.values(o).forEach(lauf); } };
-  lauf(st);
-  for (const id of ids) await DB.del('notes', id).catch(() => {});
+  for (const id of notizIds(st)) await DB.del('notes', id).catch(() => {});
   await DB.del('state', proj.id).catch(() => {}); await DB.del('projects', proj.id).catch(() => {});
   if (S.urls) { for (const u of S.urls.values()) { try { URL.revokeObjectURL(u); } catch { /* egal */ } } S.urls.clear(); }
 }
