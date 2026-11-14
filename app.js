@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v5.1';
+const APP_VERSION = 'v5.2';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -539,6 +539,7 @@ async function enterContext(tab, versionId) {
     c.missing = !S.urls.has(c.id);
     S.clips = [c];
     S.vsegs = visibleShots(ver.manifest);
+    wellenHolen(ver);
   } else {
     S.ver = null; S.state = S.ps.shortlist; S.tracks = S.footTracks; S.clips = S.footClips; S.vsegs = null;
   }
@@ -1597,14 +1598,31 @@ new MutationObserver(() => requestAnimationFrame(karteMehr)).observe($('current'
  * Eigene Zeile unter der Version; die Schnitte der Version laufen als feine Linien durch, Tippen dort wirkt wie auf der Version. */
 const WAVE_H = 40;
 const WELLEN = new WeakMap();
+// v5.2: fehlt die Wellenform im Manifest (Version vor v5.0 importiert), aus dem Briefkasten holen – ohne Neu-Import des Videos
+const WELLEN_VERSUCHT = new Set();
+async function wellenHolen(ver) {
+  if (!ver || !ver.manifest || ver.manifest.musik_wellen || WELLEN_VERSUCHT.has(ver.version_id)) return;
+  WELLEN_VERSUCHT.add(ver.version_id);
+  try {
+    const link = await bkLink(await projPid(S.proj)); if (!link) return;
+    const r = await (await fetch(`${link.url}/v1/wellen?k=${encodeURIComponent(link.key)}&v=${encodeURIComponent(ver.version_id)}`)).json();
+    if (!r || !r.ok || !r.wellen || !r.wellen.daten) return;
+    ver.manifest.musik_wellen = r.wellen;
+    log('wellen-geholt', { version: ver.version_id, quelle: r.wellen.quelle });
+    save(true);
+    if (S.ver === ver) { resizeCanvas(); toast('♪ Musikspur geladen – links an „♪ Musik“ ziehen macht sie größer', 3500); }
+  } catch { /* offline */ }
+}
+// Höhe der Musikspur: links am Spurkopf ziehen (gemerkt je Gerät)
+let waveH = WAVE_H;
+try { waveH = +localStorage.getItem('fp-wellen-h') || WAVE_H; } catch { /* privat */ }
 function wellen() {
   const w = S.ver && S.ver.manifest && S.ver.manifest.musik_wellen;
   if (!w || !w.daten) return null;
   let d = WELLEN.get(S.ver);
   if (!d || d.src !== w.daten) {
-    const b = atob(w.daten), a = new Uint8Array(b.length);
-    for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i);
-    d = { src: w.daten, a, hz: w.hz || 50, quelle: w.quelle };
+    const dek = (t) => { if (!t) return null; const b = atob(t), a = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); return a; };
+    d = { src: w.daten, a: dek(w.daten), bass: dek(w.bass), hz: w.hz || 50, quelle: w.quelle };
     WELLEN.set(S.ver, d);
   }
   return d;
@@ -1612,33 +1630,39 @@ function wellen() {
 function laneGeom() {
   const h = cv.height / (window.devicePixelRatio || 1);
   const nt = ((S.state && S.state.takes) ? S.state.takes.length : 0) + (CUT.rec ? 1 : 0);
-  const wh = wellen() ? WAVE_H : 0;
-  const lh = Math.max(30, Math.min(70, (h - RULER - 6 - COM_H - wh - nt * TAKE_H) / S.tracks.length));
+  const frei = h - RULER - 6 - COM_H - nt * TAKE_H;
+  const whMax = Math.max(WAVE_H, frei - 30 * S.tracks.length);
+  const wh = wellen() ? clamp(waveH, WAVE_H, whMax) : 0;
+  const lh = Math.max(30, Math.min(70, (frei - wh) / S.tracks.length));
   const wy = RULER + 4 + S.tracks.length * lh, cy = wy + wh;
-  return { lh, y: (i) => RULER + 4 + i * lh, wy, wh, cy, ty: (k) => cy + COM_H + k * TAKE_H, nt };
+  return { lh, y: (i) => RULER + 4 + i * lh, wy, wh, whMax: wellen() ? whMax : 0, cy, ty: (k) => cy + COM_H + k * TAKE_H, nt };
 }
 function drawWellen(w, FS) {
   const WV = wellen(); if (!WV || !S.clips[0]) return;
   const G = laneGeom(), yy = G.wy + 1, hh = G.wh - 6, mid = yy + hh / 2, c0 = S.clips[0].s, n = WV.a.length;
   ctx.fillStyle = FS ? 'rgba(255,255,255,0.04)' : '#141619'; ctx.fillRect(HEAD, yy, w - HEAD, hh);
-  ctx.fillStyle = FS ? 'rgba(94,214,160,0.8)' : '#5ed6a0';
+  // ganze Musik gedämpft, darüber hell der Bass (Bassdrum/Beat, v5.2) – daran lassen sich Cuts auf den Takt setzen
   const step = 2;
-  for (let x = HEAD; x < w; x += step) {
-    let i0 = Math.floor((rOfX(x) - c0) * WV.hz), i1 = Math.floor((rOfX(x + step) - c0) * WV.hz);
-    if (i1 <= i0) i1 = i0 + 1;
-    if (i1 <= 0 || i0 >= n) continue;
-    i0 = Math.max(0, i0); i1 = Math.min(n, i1);
-    let m = 0; for (let i = i0; i < i1; i++) if (WV.a[i] > m) m = WV.a[i];
-    if (!m) continue;
-    const v = Math.max(0.5, Math.pow(m / 255, 1.6) * hh / 2);
-    ctx.fillRect(x, mid - v, step - 0.5, 2 * v);
-  }
+  const spur = (arr, farbe, exp) => {
+    if (!arr) return;
+    ctx.fillStyle = farbe;
+    for (let x = HEAD; x < w; x += step) {
+      let i0 = Math.floor((rOfX(x) - c0) * WV.hz), i1 = Math.floor((rOfX(x + step) - c0) * WV.hz);
+      if (i1 <= i0) i1 = i0 + 1;
+      if (i1 <= 0 || i0 >= n) continue;
+      i0 = Math.max(0, i0); i1 = Math.min(n, i1);
+      let m = 0; for (let i = i0; i < i1; i++) if (arr[i] > m) m = arr[i];
+      if (!m) continue;
+      const v = Math.max(0.5, Math.pow(m / 255, exp) * hh / 2);
+      ctx.fillRect(x, mid - v, step - 0.5, 2 * v);
+    }
+  };
+  spur(WV.a, WV.bass ? (FS ? 'rgba(94,214,160,0.45)' : '#2f6b55') : (FS ? 'rgba(94,214,160,0.8)' : '#5ed6a0'), 1.6);
+  spur(WV.bass, FS ? 'rgba(160,255,200,0.9)' : '#7dffc0', 2.2);
   if (S.vsegs) {   // Schnitte der Version
     ctx.fillStyle = 'rgba(255,255,255,0.45)';
     for (const sg of S.vsegs) { const x = xOf(c0 + sg.a); if (x >= HEAD && x <= w) ctx.fillRect(x, yy, 1, hh); }
   }
-  ctx.fillStyle = 'rgba(255,255,255,0.55)'; ctx.font = '600 10px -apple-system, Segoe UI, sans-serif';
-  ctx.fillText(WV.quelle === 'mix' ? '♪ Ton' : '♪ Musik', HEAD + 4, yy + 11);
 }
 const W = () => cv.width / (window.devicePixelRatio || 1);
 // Beim Ziehen eines In/Out-Griffs bleibt die Ansicht stehen (viewLock), sonst läuft sie mit dem Playhead
@@ -1860,6 +1884,15 @@ function draw() {
     const off = S.state.offsets[t.id] || 0;
     if (off) { ctx.fillStyle = '#f2c14e'; ctx.font = '10px sans-serif'; ctx.fillText((off > 0 ? '+' : '') + off.toFixed(1) + ' s', 10, y(i) + lh - 10); }
   });
+  { const G = laneGeom(), WV = wellen();
+    if (G.wh && WV) {
+      ctx.fillStyle = FS ? 'rgba(0,0,0,0.45)' : '#1a1c1f'; ctx.fillRect(0, G.wy + 1, HEAD - 4, G.wh - 6);
+      ctx.fillStyle = '#5ed6a0'; ctx.fillRect(0, G.wy + 1, 4, G.wh - 6);
+      ctx.fillStyle = '#e8e8ec'; ctx.font = '600 12px -apple-system, Segoe UI, sans-serif';
+      ctx.fillText(WV.quelle === 'mix' ? '♪ Ton' : '♪ Musik', 10, G.wy + 16);
+      if (G.wh >= 34) { ctx.fillStyle = '#8b9098'; ctx.font = '600 15px sans-serif'; ctx.fillText('⇕', HEAD - 24, G.wy + G.wh - 10); }
+    }
+  }
   if (!FS) { ctx.fillStyle = '#1a1c1f'; ctx.fillRect(0, 0, HEAD - 4, RULER); }
   ctx.fillStyle = '#8b9098'; ctx.font = '10px sans-serif'; ctx.fillText('Spuren', 10, 16);
   { const G = laneGeom(); const n = (S.state.takes || []).length + (CUT.rec ? 1 : 0);
@@ -1945,7 +1978,10 @@ function hit(x, y) {
     return { type: 'take', take: tk };
   }
   const { lh, y: ly } = G;
-  if (G.wh && y >= G.wy && y < G.cy) return hit(x, ly(0) + lh / 2);   // Musik-Wellenform wirkt wie die Version
+  if (G.wh && y >= G.wy && y < G.cy) {
+    if (x < HEAD) return { type: 'wellenkopf', h0: G.wh, max: G.whMax };       // ziehen = Höhe, antippen = groß/klein
+    return hit(x, ly(0) + lh / 2);                                              // Musik-Wellenform wirkt wie die Version
+  }
   const ti = Math.floor((y - RULER - 4) / lh);
   const track = S.tracks[ti];
   if (x < HEAD) return { type: 'head', track };
@@ -1982,7 +2018,7 @@ cv.addEventListener('pointerdown', (e) => {
   const p = ptrs.get(e.pointerId);
   const h = hit(p.x, p.y);
   g = { ...h, x0: p.x, y0: p.y, lastX: p.x, moved: false, t0: performance.now(), fine: false, dT: r2d(S.T) };
-  stopPlay();
+  if (h.type !== 'wellenkopf') stopPlay();
   if (h.type === 'lane' || h.type === 'sel' || h.type === 'empty') g.lp = setTimeout(longPressMark, MARK_LONGPRESS_MS);
   if (h.type === 'handle') {
     viewLock = r2d(S.T);
@@ -2040,6 +2076,10 @@ cv.addEventListener('pointermove', (e) => {
     S.pps = clamp(g.pps0 * Math.hypot(a.x - b.x, a.y - b.y) / g.d0, 0.3, 600);
     requestDraw(); return;
   }
+  if (g.type === 'wellenkopf') {
+    if (Math.abs(p.y - g.y0) > 4) g.moved = true;
+    waveH = clamp(g.h0 + (p.y - g.y0), WAVE_H, g.max); requestDraw(); return;
+  }
   if (g.lpDone) return;
   const dx = p.x - g.x0;
   if (Math.abs(dx) > 6 || Math.abs(p.y - g.y0) > 6) { if (!g.moved && g.lp && !g.fine) clearTimeout(g.lp); g.moved = true; }
@@ -2074,6 +2114,11 @@ function endPointer(e) {
   ptrs.delete(e.pointerId);
   if (!g) return;
   if (g.type === 'pinch') { if (ptrs.size === 0) { g = null; save(); } return; }
+  if (g.type === 'wellenkopf') {
+    if (!g.moved) waveH = g.h0 > WAVE_H + 20 ? WAVE_H : g.max;                   // antippen: ganz groß ↔ klein
+    try { localStorage.setItem('fp-wellen-h', String(Math.round(waveH))); } catch { /* privat */ }
+    log('wellen-hoehe', { h: Math.round(waveH) }); g = null; requestDraw(); return;
+  }
   clearTimeout(g.lp);
   if (!g.lpDone) $('loupe').classList.add('hidden');
   viewLock = null;
