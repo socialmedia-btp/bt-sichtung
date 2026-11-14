@@ -440,7 +440,7 @@ function slipCardBind(box, sh) {
     const k = b.dataset.s;
     if (k === 'slip') startSlip();
     else if (k === 'tausch') openTausch(sh);
-    else if (k === 'platz' || k === 'schieben') umFenster(sh, k);
+    else if (k === 'platz' || k === 'schieben') umWahlStart(sh, k);
     else if (k === 'ctx') playContext(sh, effSrcIn(sh));
     else if (k === 'reset') resetShot(sh);
   });
@@ -529,15 +529,65 @@ function umFenster(sh, art) {
     b.querySelector('#umZu').onclick = closeModal;
     const aktiv = b.querySelector(`[data-um="${CSS.escape(sh.id)}"]`); if (aktiv) aktiv.scrollIntoView({ block: 'center' });
     b.querySelectorAll('[data-um]:not([disabled])').forEach((x) => { x.onclick = () => {
-      const j = L.findIndex((s) => s.id === x.dataset.um), Y = L[j];
-      if (art === 'platz') { umAnwenden(umPlan([[sh, Y], [Y, sh]]), `Shot ${+sh.nr} ⇄ Shot ${+Y.nr} getauscht`); return; }
-      const paare = [];
-      if (j < i) { paare.push([L[j], sh]); for (let k = j + 1; k <= i; k++) paare.push([L[k], L[k - 1]]); }
-      else { for (let k = i; k < j; k++) paare.push([L[k], L[k + 1]]); paare.push([L[j], sh]); }
-      umAnwenden(umPlan(paare), `Shot ${+sh.nr} an den Platz von Shot ${+Y.nr} verschoben (${paare.length} Plätze)`);
+      umAusfuehren(sh, L.find((s) => s.id === x.dataset.um), art);
     }; });
   });
 }
+function umAusfuehren(sh, Y, art) {
+  const L = umPlaetze(), i = L.findIndex((s) => s.id === sh.id), j = L.findIndex((s) => s.id === Y.id);
+  if (i < 0 || j < 0) return false;
+  if (art === 'platz') return umAnwenden(umPlan([[sh, Y], [Y, sh]]), `Shot ${+sh.nr} ⇄ Shot ${+Y.nr} getauscht`);
+  const paare = [];
+  if (j < i) { paare.push([L[j], sh]); for (let k = j + 1; k <= i; k++) paare.push([L[k], L[k - 1]]); }
+  else { for (let k = i; k < j; k++) paare.push([L[k], L[k + 1]]); paare.push([L[j], sh]); }
+  return umAnwenden(umPlan(paare), `Shot ${+sh.nr} an den Platz von Shot ${+Y.nr} verschoben (${paare.length} Plätze)`);
+}
+
+/* v5.4 (Robert 14.11.): „⇄ Platz tauschen“ / „↦ Verschieben“ wählt man in der Zeitleiste der Version, nicht in einer Liste.
+ * Der Shot unter dem Abspielkopf ist das Ziel (antippen/ziehen), grün markiert; der eigene Shot ist gestrichelt. Oben „✓ … bestätigen“,
+ * die Liste bleibt als Ausweg. */
+let UMW = null;   // {shId, art}
+function umWahlStart(sh, art) {
+  const g = tauschGrund(sh); if (g) { toast((art === 'platz' ? 'Tauschen' : 'Verschieben') + ' nicht möglich: ' + g, 3500); return; }
+  if (CUT.mode) toggleCutMode(false);
+  stopPlay();
+  UMW = { shId: sh.id, art };
+  log('umstellen-wahl', { shot: sh.id, art });
+  $('umBar').classList.remove('hidden'); document.body.classList.add('tausch-wahl');
+  umWahlUpdate(); requestDraw();
+  toast('Jetzt in der Zeitleiste auf den Ziel-Shot tippen, dann oben bestätigen', 3500);
+}
+function umWahlShot() { return UMW && S.ver ? S.ver.manifest.shots.find((s) => s.id === UMW.shId) || null : null; }
+function umWahlZiel() {
+  if (!UMW || !S.ver || !S.vsegs || !S.clips[0]) return null;
+  const sg = shotAt(S.T - S.clips[0].s); if (!sg) return null;
+  return umPlaetze().find((s) => s.id === sg.shot.id) || null;
+}
+let umTxt = '';
+function umWahlUpdate() {
+  if (!UMW) return;
+  const sh = umWahlShot(); if (!sh) { umWahlEnde(); return; }
+  const Y = umWahlZiel(), g = !Y || Y.id === sh.id ? 'wählen' : tauschGrund(Y) ? 'gesperrt' : '';
+  const info = `${UMW.art === 'platz' ? '⇄' : '↦'} <b>Shot ${+sh.nr}</b> ${UMW.art === 'platz' ? 'tauschen mit …' : 'verschieben an den Platz von …'} · Ziel-Shot in der Zeitleiste antippen`;
+  const knopf = g === 'wählen' ? '✓ Ziel-Shot antippen' : g ? `Shot ${+Y.nr} ist gesperrt`
+    : UMW.art === 'platz' ? `✓ Mit Shot ${+Y.nr} tauschen` : `✓ An den Platz von Shot ${+Y.nr}`;
+  if (umTxt === info + knopf) return;
+  umTxt = info + knopf;
+  $('umInfo').innerHTML = info; $('umOk').textContent = knopf; $('umOk').disabled = !!g;
+}
+function umWahlEnde() {
+  UMW = null; umTxt = '';
+  $('umBar').classList.add('hidden');
+  if (!TAUSCH) document.body.classList.remove('tausch-wahl');
+  requestDraw();
+}
+$('umOk').onclick = () => {
+  const sh = umWahlShot(), Y = umWahlZiel(), art = UMW && UMW.art;
+  if (!sh || !Y || Y.id === sh.id) return;
+  if (umAusfuehren(sh, Y, art)) { log('umstellen-zeitleiste', { shot: sh.id, ziel: Y.id, art }); umWahlEnde(); }
+};
+$('umListe').onclick = () => { const sh = umWahlShot(), art = UMW && UMW.art; umWahlEnde(); if (sh) umFenster(sh, art); };
+$('umAbbr').onclick = () => { log('umstellen-abbruch', {}); umWahlEnde(); };
 
 /* ---------- Clip tauschen: Blatt mit Shortlist-Bereichen zuerst, darunter alle Clips ----------
  * Bereiche nach ★ und Zeit; nur Bereiche/Clips, die mindestens die Shot-Länge haben, sind normal wählbar. Ein zu kurzer
@@ -552,7 +602,8 @@ function thumbHtml(c, t) {
 // v4.9t (Robert 13.11.): Tauschen wählt man in der Shortlist-Sequenz des Footage (die kennt man), die Liste bleibt als Ausweg
 function openTausch(sh) {
   const g = tauschGrund(sh); if (g) { toast('Tauschen nicht möglich: ' + g, 3500); return; }
-  if ((S.ps.shortlist.selections || []).some((s) => s.kind === 'range' && !s.open)) { tauschUeberShortlist(sh); return; }
+  // v5.4: auch ohne Shortlist-Bereiche in der Zeitleiste wählen (normale Footage-Spuren); Liste nur noch als Ausweg
+  if (S.footClips.length) { tauschUeberShortlist(sh); return; }
   openTauschListe(sh);
 }
 function openTauschListe(sh) {
@@ -620,9 +671,10 @@ async function tauschUeberShortlist(sh) {
   log('tausch-shortlist', { shot: sh.id });
   await enterContext('shortlist');
   TAUSCH.intern = false;
-  if (!reel) playShortlist(true);
-  if (!reel) { tauschEnde(); toast('Keine fertigen Shortlist-Bereiche'); return; }
-  $('tauschInfo').innerHTML = `⟲ <b>Shot ${+sh.nr}</b> tauschen · Abspielkopf an den gewünschten Anfang ziehen · <span class="ts-gruen">grün</span> = schon im Schnitt`;
+  if (!reel && reelListe(0).length) playShortlist(true);
+  $('tauschInfo').innerHTML = reel
+    ? `⟲ <b>Shot ${+sh.nr}</b> tauschen · Abspielkopf an den gewünschten Anfang ziehen · <span class="ts-gruen">grün</span> = schon im Schnitt`
+    : `⟲ <b>Shot ${+sh.nr}</b> tauschen · in der Zeitleiste den Clip antippen und den Abspielkopf an den gewünschten Anfang ziehen`;
   $('tauschBar').classList.remove('hidden'); document.body.classList.add('tausch-wahl');
   seqZeichnen();
 }
@@ -644,13 +696,18 @@ async function tauschZurueck(wahl) {
   if (!wahl) return;
   const c = footClip(wahl.clipId); if (!c) return;
   const grund = clipGrund(sh, c); if (grund) { toast(`${c.name || c.id}: ${grund}`, 3500); return; }
-  const bereich = clipGrund(sh, c, wahl.lo, wahl.hi) ? null : { id: wahl.rangeId, lo: wahl.lo, hi: wahl.hi };
+  const bereich = !wahl.rangeId || clipGrund(sh, c, wahl.lo, wahl.hi) ? null : { id: wahl.rangeId, lo: wahl.lo, hi: wahl.hi };
   log('tausch-wahl', { shot: sh.id, clip: c.id, bereich: bereich ? bereich.id : null, ab: wahl.frame, weg: 'shortlist' });
   startSlip({ c, srcIn: wahl.frame, bereich });
 }
 function tauschHier() {
   if (!TAUSCH) return;
-  if (!reel) { toast('Shortlist ist zu – erst wieder öffnen oder „Liste“ nehmen'); return; }
+  if (!reel) {   // normale Spuren: Clip unter dem Abspielkopf (aktive Spur zuerst)
+    const c = shownClip(); if (!c) { toast('Hier liegt kein Clip – Abspielkopf auf einen Clip ziehen'); return; }
+    const max = Math.max(1, Math.floor(c.dur * c.fps + 1e-6));
+    tauschZurueck({ clipId: c.id, rangeId: null, lo: 0, hi: max, frame: clamp(Math.round((S.T - c.s) * c.fps), 0, max - 1) });
+    return;
+  }
   const s = reel.list[reel.i], c = s && S.byId.get(s.clipId); if (!c) return;
   const lo = Math.round(s.inT * c.fps), hi = Math.round(s.outT * c.fps);
   const frame = clamp(Math.round((S.T - c.s) * c.fps), lo, hi);

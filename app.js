@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v5.3';
+const APP_VERSION = 'v5.4';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -520,6 +520,7 @@ async function enterContext(tab, versionId) {
   if (rec || recStarting) { toast('Erst die Sprachnotiz beenden'); return false; }
   if (typeof stopAlles === 'function') stopAlles();
   if (typeof TAUSCH !== 'undefined' && TAUSCH && !TAUSCH.intern) tauschEnde();   // Tausch-Wahl durch Tab-Wechsel abgebrochen
+  if (typeof UMW !== 'undefined' && UMW) umWahlEnde();                              // Platz-Wahl ebenso
   if (tab !== 'edit' && !S.footClips.length) { // Kunden-Projekt: es gibt keine Shortlist
     const v = S.ps.versions[S.ps.versions.length - 1]; if (!v) return false;
     tab = 'edit'; versionId = versionId || v.version_id;
@@ -1929,6 +1930,7 @@ function draw() {
 }
 // Edit-Tab: Shots der Version auf der Spur – änderbare hell, gesperrte schraffiert (bleiben kommentierbar)
 function drawShots(c, yy, hh, w) {
+  const UZ = typeof UMW !== 'undefined' && UMW ? (umWahlUpdate(), umWahlZiel()) : null;
   for (const sg of S.vsegs) {
     const a = xOf(c.s + sg.a), b = xOf(c.s + sg.b);
     if (b < HEAD || a > w) continue;
@@ -1951,6 +1953,10 @@ function drawShots(c, yy, hh, w) {
     if (az) {
       ctx.strokeStyle = '#f2c14e'; ctx.lineWidth = 2; ctx.strokeRect(a + 1, yy + 1, b - a - 2, hh - 2);
       if (b - a > 40) { ctx.fillStyle = '#f2c14e'; ctx.font = '700 11px sans-serif'; ctx.fillText('✎ ' + deltaTxt(sh, az.src_in), Math.max(a, HEAD) + 5, yy + hh / 2 + 4); }
+    }
+    if (typeof UMW !== 'undefined' && UMW) {   // v5.4 Platz-Wahl: Quelle gestrichelt, Ziel grün
+      if (sh.id === UMW.shId) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.setLineDash([6, 4]); ctx.strokeRect(a + 1.5, yy + 1.5, b - a - 3, hh - 3); ctx.setLineDash([]); }
+      else if (UZ && UZ.id === sh.id) { ctx.fillStyle = 'rgba(48,209,88,0.32)'; ctx.fillRect(a, yy, b - a, hh); ctx.strokeStyle = '#30d158'; ctx.lineWidth = 3; ctx.strokeRect(a + 1.5, yy + 1.5, b - a - 3, hh - 3); }
     }
     if (b - a > 34) {
       ctx.save(); ctx.beginPath(); ctx.rect(a + 2, yy, b - a - 4, hh); ctx.clip();

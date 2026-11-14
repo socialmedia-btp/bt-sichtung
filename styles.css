@@ -400,6 +400,7 @@ body.fs.reel .cutbar { bottom: 350px; }
 .tausch-info { font-size: 14px; }
 .tausch-knoepfe { display: flex; gap: 6px; }
 .tausch-knoepfe button { min-height: 44px; }
+.tausch-knoepfe button:disabled { opacity: 0.45; }
 .ts-gruen { color: #30d158; font-weight: 700; }
 
 /* Tool-Feedback (v4.9x) */

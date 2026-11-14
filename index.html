@@ -12,7 +12,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="icon" href="icon-192.png">
-<link rel="stylesheet" href="styles.css?v=5.3">
+<link rel="stylesheet" href="styles.css?v=5.4">
 </head>
 <body>
 
@@ -147,6 +147,10 @@
   </div>
 
   <!-- Cut-Takt: großes ✂, rechts daneben Stopp -->
+  <div id="umBar" class="tausch-bar hidden">
+    <span id="umInfo" class="tausch-info"></span>
+    <span class="tausch-knoepfe"><button id="umOk" class="gold">✓</button><button id="umListe">☰ Liste</button><button id="umAbbr">Abbrechen</button></span>
+  </div>
   <div id="tauschBar" class="tausch-bar hidden">
     <span id="tauschInfo" class="tausch-info"></span>
     <span class="tausch-knoepfe"><button id="tauschHier" class="gold">✓ Ab hier einsetzen</button><button id="tauschListe">☰ Liste</button><button id="tauschAbbr">Abbrechen</button></span>
@@ -190,9 +194,9 @@
 <div id="modal" class="modal hidden"><div class="modal-box" id="modalBox"></div></div>
 <div id="toast" class="toast hidden"></div>
 
-<script src="vertrag.js?v=5.3"></script>
-<script src="app.js?v=5.3"></script>
-<script src="slip.js?v=5.3"></script>
-<script src="sequenz.js?v=5.3"></script>
+<script src="vertrag.js?v=5.4"></script>
+<script src="app.js?v=5.4"></script>
+<script src="slip.js?v=5.4"></script>
+<script src="sequenz.js?v=5.4"></script>
 </body>
 </html>
