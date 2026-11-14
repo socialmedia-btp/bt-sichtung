@@ -422,3 +422,9 @@ body.fs.reel .cutbar { bottom: 350px; }
 /* Ersatzmedium (v4.9x) */
 .ersatz { color: #ffd60a; }
 .ersatz-hint { color: #ffd60a; }
+
+/* Umstellen (v4.9y) */
+.um-liste { display: flex; flex-direction: column; gap: 6px; max-height: 55vh; overflow: auto; margin-top: 8px; }
+.um-zeile { text-align: left; min-height: 44px; padding: 8px 12px; font-size: 14px; line-height: 1.35; }
+.um-zeile.aus { opacity: .45; }
+.slip-btns { flex-wrap: wrap; }

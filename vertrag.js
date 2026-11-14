@@ -13,10 +13,10 @@
   function zielOf(shot, ereignisse) {
     let ziel = null;
     for (const e of ereignisse) {
-      if (e.typ === 'slip' || e.typ === 'tausch') ziel = { ...e.ziel, change_id: e.change_id };
+      if (e.typ === 'slip' || e.typ === 'tausch' || e.typ === 'umstellen') ziel = { ...e.ziel, change_id: e.change_id };
       else if (e.typ === 'reset') ziel = null;
     }
-    if (ziel && ziel.clip === shot.clip && ziel.src_in === shot.src_in) return null;
+    if (ziel && !ziel.von_shot && ziel.clip === shot.clip && ziel.src_in === shot.src_in) return null;
     return ziel;
   }
   function markerText(version, shot, a) {
@@ -27,26 +27,37 @@
     const q1 = `${fmtS(n.src_in / n.src_fps)}–${fmtS(n.src_out / n.src_fps)}`;
     const head = a.typ === 'slip'
       ? `Shot ${shot.nr} · ${shot.clip} · Inhalt ${a.delta_s >= 0 ? '+' : '−'}${fmtS(Math.abs(a.delta_s))} s (Quelle ${q0} → ${q1})`
+      : a.typ === 'umstellen' ? `Shot ${shot.nr} ← Shot ${n.von_nr} · ${n.clip} (Quelle ${q1})`
       : `Shot ${shot.nr} · ${shot.clip} → ${n.clip} (Quelle ${q1})`;
-    return `${head} · Länge gleich · ${v} · Ton bleibt` + ersatzText(shot);
+    return `${head} · Länge gleich · ${v} · Ton bleibt` + ersatzText(shot, a);
   }
-  // Zusatz für Shots auf Ersatzmedium (v4.9x: Zeitlupe/Topaz → Original) – gleich wie bt_v4.ersatz_text
-  function ersatzText(shot) {
-    const e = shot.ersatz; if (!e) return '';
-    const t = shot.tempo || 1;
-    return (Math.abs(t - 1) > 1e-3 ? ` · Zeitlupe ${fmtS(t)}×` : '') + (e.art === 'topaz' ? ' · TOPAZ NEU RECHNEN' : '');
+  // Zusatz für Zeitlupe/Topaz (v4.9x Ersatzmedium, v4.9y Umstellen: Art des umgezogenen Inhalts) – gleich wie bt_v4.ersatz_text
+  function ersatzText(shot, a) {
+    const um = a.typ === 'umstellen';
+    if (!um && !shot.ersatz) return '';
+    const art = um ? a.ersatz_art : shot.ersatz.art, t = a.tempo || 1;
+    return (Math.abs(t - 1) > 1e-3 ? ` · Zeitlupe ${fmtS(t)}×` : '')
+      + (art === 'topaz' ? (a.wiederverwenden ? ' · Topaz-Render bleibt' : ' · TOPAZ NEU RECHNEN') : '');
   }
+  // Quellbilder des neuen Inhalts (v4.9y: Umstellen bringt seine eigene Länge n_src mit – Platzlänge × Tempo des Inhalts)
+  const nSrcOf = (shot, z) => (Number.isInteger(z.n_src) ? z.n_src : Math.round((shot.src_out - shot.src_in) * z.src_fps / shot.src_fps));
+  const tempoOf = (shot, z) => (z.von_shot ? (z.tempo || 1.0) : shot.ersatz ? (shot.tempo || 1.0) : 1.0);
   function auftrag(version, shot, z, revision = 1) {
-    const typ = z.clip === shot.clip ? 'slip' : 'tausch';
+    const typ = z.von_shot ? 'umstellen' : z.clip === shot.clip ? 'slip' : 'tausch';
     const nSrc = shot.src_out - shot.src_in;
-    const zOut = typ === 'tausch' ? z.src_in + Math.round(nSrc * z.src_fps / shot.src_fps) : z.src_in + nSrc;
+    const zOut = typ === 'slip' ? z.src_in + nSrc : z.src_in + nSrcOf(shot, z);
     const a = {
       change_id: z.change_id, revision, typ, shot: shot.id, nr: shot.nr, v_in: shot.v_in, v_out: shot.v_out,
       vorher: { clip: shot.clip, src_in: shot.src_in, src_out: shot.src_out, src_fps: shot.src_fps },
       nachher: { clip: z.clip, src_in: z.src_in, src_out: zOut, src_fps: z.src_fps, bereich: z.bereich || 'ganzer_clip' },
-      tempo: shot.ersatz ? (shot.tempo || 1.0) : 1.0, audio_policy: 'keep_version_audio', folgen: [...(shot.folgen || [])], pruefung: [],
+      tempo: tempoOf(shot, z), audio_policy: 'keep_version_audio', folgen: [...(shot.folgen || [])], pruefung: [],
     };
-    if (Array.isArray(z.bereich_frames)) a.nachher.bereich_frames = [...z.bereich_frames];   // Shortlist-Grenze geht mit (apply_edits prüft)
+    if (Array.isArray(z.bereich_frames)) a.nachher.bereich_frames = [...z.bereich_frames];
+    if (typ === 'umstellen') {
+      a.nachher.von_shot = z.von_shot; a.nachher.von_nr = z.von_nr;
+      if (z.ersatz_art) a.ersatz_art = z.ersatz_art;
+      a.wiederverwenden = !!z.wiederverwenden;
+    }   // Shortlist-Grenze geht mit (apply_edits prüft)
     if (typ === 'slip') {
       a.delta_src_frames = z.src_in - shot.src_in;
       a.delta_s = Math.round(a.delta_src_frames / shot.src_fps * 1e4) / 1e4;
@@ -75,7 +86,7 @@
     if (!z || !Number.isInteger(z.src_in) || !(z.src_fps > 0)) return 'Zielangaben ungültig';
     const c = projektClips[z.clip];
     if (!c) return 'Clip nicht im Projekt';
-    const n = Math.round((shot.src_out - shot.src_in) * z.src_fps / shot.src_fps);
+    const n = nSrcOf(shot, z);
     let lo = 0, hi = Math.round(c.dur * z.src_fps);
     // Shortlist-Bereich nur innerhalb der echten Clipgrenzen
     if (z.bereich_frames) { lo = Math.max(lo, z.bereich_frames[0]); hi = Math.min(hi, z.bereich_frames[1]); }

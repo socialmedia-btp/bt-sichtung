@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9x';
+const APP_VERSION = 'v4.9y';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -2273,7 +2273,7 @@ function ereignisseGueltig(evs, ver) {
   for (const e of Array.isArray(evs) ? evs : []) {
     const sh = e && shots.get(e.shot);
     const ok = sh && typeof e.change_id === 'string' && (e.typ === 'reset'
-      || ((e.typ === 'slip' || e.typ === 'tausch') && e.ziel && typeof e.ziel.clip === 'string' && Number.isInteger(e.ziel.src_in) && e.ziel.src_fps > 0 && sh.editierbar));
+      || ((e.typ === 'slip' || e.typ === 'tausch' || e.typ === 'umstellen') && e.ziel && typeof e.ziel.clip === 'string' && Number.isInteger(e.ziel.src_in) && e.ziel.src_fps > 0 && sh.editierbar));
     if (ok) gut.push(e); else log('ereignis-verworfen', { shot: e && e.shot, typ: e && e.typ });
   }
   return gut;

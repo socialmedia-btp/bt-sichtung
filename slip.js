@@ -58,8 +58,10 @@ function footClipOf(sh) { return footClip(sh.clip); }
 // Wirksamer Inhalt eines Shots: Clip (Footage), erstes Quellbild, Quell-fps – nach Tausch der neue Clip
 function inhalt(sh) {
   const z = effZiel(sh);
-  return z ? { c: footClip(z.clip), srcIn: z.src_in, f: z.src_fps, z } : { c: footClipOf(sh), srcIn: sh.src_in, f: sh.src_fps, z: null };
+  return z ? { c: footClip(z.clip), srcIn: z.src_in, f: z.src_fps, z, t: tempoInhalt(sh, z) } : { c: footClipOf(sh), srcIn: sh.src_in, f: sh.src_fps, z: null, t: tempoInhalt(sh, null) };
 }
+// Tempo des wirksamen Inhalts (gleiche Regel wie vertrag.js tempoOf): Umstellen bringt sein Tempo mit, sonst das des Platzes
+function tempoInhalt(sh, z) { return z && z.von_shot ? (z.tempo || 1) : sh.ersatz ? (sh.tempo || 1) : 1; }
 function effSrcIn(sh) { return inhalt(sh).srcIn; }
 const fpsOk = (f) => { const r = f / S.ver.manifest.fps; return Math.abs(r - Math.round(r)) < 1e-6 && Math.round(r) >= 1; };
 // Darf dieser Shot verschoben werden? null = ja, sonst Grund
@@ -111,7 +113,8 @@ async function startSlip(opt) {
   const c = opt ? opt.c : ih.c, f = opt ? c.fps : ih.f;
   if (!c || c.missing || !S.urls.has(c.id)) { toast('Proxy fehlt auf diesem Gerät', 3500); return; }
   const step = Math.max(1, Math.round(f / fps));                  // kleinster sichtbarer Schritt: 1 Sequenzbild
-  const n = Math.round((sh.src_out - sh.src_in) * f / sh.src_fps), clipFrames = Math.floor(c.dur * f + 1e-6);
+  const n = !opt && ih.z && Number.isInteger(ih.z.n_src) ? Math.round(ih.z.n_src * f / ih.z.src_fps)
+    : Math.round((sh.src_out - sh.src_in) * f / sh.src_fps), clipFrames = Math.floor(c.dur * f + 1e-6);
   // Grenzen: Shortlist-Bereich (beim Tausch, bewusst erweiterbar) bzw. ganzer Clip
   const zb = !opt && ih.z && ih.z.bereich_frames ? { id: ih.z.bereich, lo: ih.z.bereich_frames[0], hi: ih.z.bereich_frames[1] } : null;
   const bereich = opt ? opt.bereich || null : zb;
@@ -192,14 +195,16 @@ function slipApply() {
   if (cur.c && cur.c.id === c.id && srcIn === cur.srcIn && curB === newB) { slipClose(); return; }   // nichts geändert
   const z = { clip: c.id, src_in: srcIn, src_fps: f };
   if (SL.bereich) { z.bereich = SL.bereich.id; z.bereich_frames = [SL.lo, SL.hi]; }
+  const vz = cur.z && cur.z.von_shot && cur.z.clip === c.id ? cur.z : null;   // v4.9y: umgezogenen Inhalt weiter verschieben
+  if (vz) for (const k of ['von_shot', 'von_nr', 'tempo', 'n_src', 'ersatz_art']) if (vz[k] !== undefined) z[k] = vz[k];
   const err = BTV.checkZiel(sh, z, { [c.id]: { dur: c.dur } });
   if (err) { toast(err, 3500); return; }
-  const typ = c.id === sh.clip ? 'slip' : 'tausch';
+  const typ = vz ? 'umstellen' : c.id === sh.clip ? 'slip' : 'tausch';
   S.state.ereignisse = S.state.ereignisse || [];
   S.state.ereignisse.push({ change_id: 'c-' + uid(), shot: sh.id, typ, ziel: z, t: Date.now() });
   log(typ, { shot: sh.id, clip: c.id, von: cur.srcIn, nach: srcIn, bereich: z.bereich || null });
   slipClose(); changed();
-  toast(typ === 'slip' ? `Shot ${+sh.nr}: Inhalt ${deltaTxt(sh, srcIn)} – übernommen` : `Shot ${+sh.nr}: getauscht gegen ${c.name || c.id}`, 2500);
+  toast(typ === 'tausch' ? `Shot ${+sh.nr}: getauscht gegen ${c.name || c.id}` : `Shot ${+sh.nr}: Inhalt verschoben – übernommen`, 2500);
 }
 function slipClose() {
   SL = null; document.body.classList.remove('slip'); $('slipBar').classList.add('hidden');
@@ -258,14 +263,14 @@ function changedShots() {
     .map((sh) => ({ sh, ...inhalt(sh) })).filter(zielBereit);
 }
 const veFps = () => S.ver.manifest.fps;
-const veSrcAt = (z, t) => z.srcIn / z.f + (t - z.sh.v_in / veFps()) + SLIP_LEAD;   // gewünschte Proxy-Zeit
+const veSrcAt = (z, t) => z.srcIn / z.f + (t - z.sh.v_in / veFps()) * (z.t || 1) + SLIP_LEAD;   // gewünschte Proxy-Zeit (Zeitlupe: langsamer)
 function veShow(on, still) {
   pv.style.opacity = on ? 1 : 0;
   pvStill.style.opacity = !on && still && VE.stillBereit ? 1 : 0;
   $('pvBadge').classList.toggle('hidden', !on && !(still && VE.stillBereit) && !SL);
 }
 function veStart(t) {
-  pv.playbackRate = 1;
+  pv.playbackRate = VE.cur.t || 1;
   pv.currentTime = Math.max(0, veSrcAt(VE.cur, t + VE.vorhalt));   // um die Stockzeit vorausspringen
   pv.play().catch(() => {});
   VE.gestartet = performance.now(); VE.ruhigAb = VE.gestartet + 900; VE.win = []; VE.off = null;
@@ -352,7 +357,7 @@ async function stillstandBild() {
   const z = sh && effZiel(sh) ? { sh, ...inhalt(sh) } : null;
   if (!z || !zielBereit(z)) { if (stillZiel) { stillZiel = ''; pvStill.style.opacity = 0; $('pvBadge').classList.add('hidden'); } return; }
   const f = z.f, fps = veFps();
-  const bild = z.srcIn + Math.floor((t - sh.v_in / fps) * fps + 1e-4) * Math.round(f / fps);   // Quellbild zum Sequenzbild
+  const bild = z.srcIn + Math.round(Math.floor((t - sh.v_in / fps) * fps + 1e-4) * (f / fps) * (z.t || 1));   // Quellbild zum Sequenzbild
   const key = sh.id + '@' + z.c.id + '@' + z.srcIn + '#' + bild;
   if (key === stillZiel) return;
   stillZiel = key;
@@ -404,11 +409,12 @@ function slipCardHtml(sh) {
   // Verschieben im wirksamen Inhalt (nach Tausch: im neuen Clip) braucht dessen Proxy
   const grund = a ? (zielBereit(ih) ? null : 'Proxy fehlt auf diesem Gerät') : slipGrund(sh);
   if (grund && tg && !a) return sh.editierbar && S.footClips.length ? `<div class="hint">Ändern: ${esc(grund)}</div>` : '';
-  const was = a ? (a.typ === 'slip' ? 'Inhalt ' + deltaTxt(sh, a.nachher.src_in) : 'getauscht → ' + (ih.c ? ih.c.name || ih.c.id : a.nachher.clip)) : '';
+  const was = a ? (a.typ === 'slip' ? 'Inhalt ' + deltaTxt(sh, a.nachher.src_in) : a.typ === 'umstellen' ? `Inhalt von Shot ${a.nachher.von_nr}`
+    : 'getauscht → ' + (ih.c ? ih.c.name || ih.c.id : a.nachher.clip)) : '';
   return `${a ? `<div class="change">✎ ${esc(was)} <span class="hint">· Länge gleich · Ton bleibt</span></div>` : ''}
     <div class="card-row slip-btns">
       ${grund ? '' : '<button data-s="slip" class="slip-go">⇆ Inhalt verschieben</button>'}
-      ${tg ? '' : '<button data-s="tausch">⟲ Clip tauschen</button>'}
+      ${tg ? '' : '<button data-s="tausch">⟲ Clip tauschen</button><button data-s="platz">⇄ Platz tauschen</button><button data-s="schieben">↦ Verschieben</button>'}
       ${a ? '<button data-s="ctx">▶ Im Zusammenhang</button><button data-s="reset" class="ghost danger">↺ Zurücksetzen</button>' : ''}
     </div>`;
 }
@@ -417,6 +423,7 @@ function slipCardBind(box, sh) {
     const k = b.dataset.s;
     if (k === 'slip') startSlip();
     else if (k === 'tausch') openTausch(sh);
+    else if (k === 'platz' || k === 'schieben') umFenster(sh, k);
     else if (k === 'ctx') playContext(sh, effSrcIn(sh));
     else if (k === 'reset') resetShot(sh);
   });
@@ -427,8 +434,92 @@ function changesHtml() {
   const list = BTV.auftraege(S.ver.manifest, S.state.ereignisse || []).filter((a) => !a.fehler);
   if (!list.length) return '';
   return `<div class="list-sub">Änderungen (${list.length})</div>` + list.map((a) => `<div class="sel-item chg" data-shot="${esc(a.shot)}">
-    <span class="dot" style="background:#f2c14e"></span><div class="t"><div class="l1">✎ Shot ${+a.nr} · ${a.typ === 'slip' ? 'Inhalt ' + (a.delta_s >= 0 ? '+' : '−') + BTV.fmtS(Math.abs(a.delta_s)) + ' s' : 'getauscht → ' + esc((footClip(a.nachher.clip) || {}).name || a.nachher.clip)}</div>
+    <span class="dot" style="background:#f2c14e"></span><div class="t"><div class="l1">✎ Shot ${+a.nr} · ${a.typ === 'slip' ? 'Inhalt ' + (a.delta_s >= 0 ? '+' : '−') + BTV.fmtS(Math.abs(a.delta_s)) + ' s' : (a.typ === 'umstellen' ? `Inhalt von Shot ${+a.nachher.von_nr}` : 'getauscht → ' + esc((footClip(a.nachher.clip) || {}).name || a.nachher.clip))}</div>
     <div class="l2">${esc(a.marker)}</div></div></div>`).join('');
+}
+
+/* ---------- Umstellen innerhalb der Version (Robert 14.11., v4.9y) ----------
+ * „⇄ Platz tauschen“: zwei Shots tauschen ihren Inhalt. „↦ Verschieben“: der Shot kommt an den Platz eines anderen, die Shots dazwischen
+ * rücken je einen Platz weiter. Die Schnittpunkte bleiben (Plätze behalten ihre Länge, Musik/Ton unverändert): der eingesetzte Inhalt
+ * beginnt an seinem bisherigen Startbild und endet passend zum Platz (mit seinem Tempo); reicht das Material bis zum Clipende nicht,
+ * rückt der Start so weit nach vorn wie nötig. Je Platz ein Ereignis {typ:'umstellen', ziel:{clip, src_in, src_fps, von_shot, von_nr,
+ * tempo, n_src, ersatz_art?, wiederverwenden?}}, alle zusammen ein Rückgängig-Schritt. */
+function umPlaetze() {
+  return S.ver.manifest.shots.filter((s) => s.rolle !== 'grafik').slice().sort((a, b) => a.v_in - b.v_in || a.ebene.localeCompare(b.ebene));
+}
+function umInhalt(sh) {   // wirksamer Inhalt eines Shots (nach früheren Änderungen)
+  const z = effZiel(sh);
+  if (!z) return { clip: sh.clip, srcIn: sh.src_in, f: sh.src_fps, tempo: tempoInhalt(sh, null), art: sh.ersatz ? sh.ersatz.art : null, unveraendert: true };
+  return { clip: z.clip, srcIn: z.src_in, f: z.src_fps, tempo: tempoInhalt(sh, z), art: z.von_shot ? z.ersatz_art || null : sh.ersatz ? sh.ersatz.art : null,
+    unveraendert: false, wiederverwenden: !!z.wiederverwenden, quelle: z.von_shot || null };
+}
+// Ziel für Platz `platz`, der den Inhalt K von Shot X bekommt → {z} oder {fehler}
+function umZiel(platz, K, X) {
+  const fps = S.ver.manifest.fps, lenS = (platz.v_out - platz.v_in) / fps;
+  const c = footClip(K.clip);
+  if (!c) return { fehler: `Shot ${X.nr}: Clip nicht im Footage-Projekt` };
+  if (!fpsOk(K.f)) return { fehler: `Shot ${X.nr}: ${K.f} fps nicht unterstützt` };
+  const n = Math.round(lenS * K.tempo * K.f), max = Math.floor(c.dur * K.f + 1e-6);
+  if (n > max) return { fehler: `Shot ${X.nr} hat zu wenig Material für den Platz von Shot ${platz.nr} (${BTV.fmtS(max / K.f / K.tempo)} s statt ${BTV.fmtS(lenS)} s)` };
+  const srcIn = Math.max(0, Math.min(K.srcIn, max - n));
+  // von_shot = Shot, aus dessen Basis der Inhalt stammt (zweimal umgezogen → der ursprüngliche) – dessen Medium/Look nutzt Premiere
+  const Q = (K.quelle && S.ver.manifest.shots.find((s) => s.id === K.quelle)) || X;
+  const z = { clip: K.clip, src_in: srcIn, src_fps: K.f, von_shot: Q.id, von_nr: Q.nr, tempo: K.tempo, n_src: n };
+  if (K.art) z.ersatz_art = K.art;
+  // gleicher Inhalt wie in der Basis von Q, gleiche Länge → vorhandenes Medium (z. B. Topaz-Render) unverändert weiterverwenden
+  if (K.clip === Q.clip && srcIn === Q.src_in && K.tempo === tempoInhalt(Q, null) && platz.v_out - platz.v_in === Q.v_out - Q.v_in) z.wiederverwenden = true;
+  return { z };
+}
+// Zuweisungen [[platz, X]] (Platz bekommt den Inhalt von X, Inhalte VOR der Änderung) → Ereignisse oder Fehler
+function umPlan(paare) {
+  const inh = new Map(paare.map(([, X]) => [X.id, umInhalt(X)]));
+  const ev = [];
+  for (const [platz, X] of paare) {
+    const g = tauschGrund(platz); if (g) return { fehler: `Shot ${platz.nr} ist gesperrt (${g})` };
+    const K = inh.get(X.id);
+    if (X.id === platz.id) continue;   // bleibt, wie er ist
+    // Inhalt kehrt unverändert an seinen Basisplatz zurück → einfach zurücksetzen
+    if (K.clip === platz.clip && K.srcIn === platz.src_in && K.tempo === tempoInhalt(platz, null)) { if (effZiel(platz)) ev.push({ shot: platz.id, typ: 'reset' }); continue; }
+    const r = umZiel(platz, K, X); if (r.fehler) return r;
+    ev.push({ shot: platz.id, typ: 'umstellen', ziel: r.z });
+  }
+  return { ev };
+}
+function umAnwenden(plan, text) {
+  if (plan.fehler) { toast(plan.fehler, 4500); return false; }
+  S.state.ereignisse = S.state.ereignisse || [];
+  const t = Date.now();
+  for (const e of plan.ev) S.state.ereignisse.push({ change_id: 'c-' + uid(), ...e, t });
+  log('umstellen', { n: plan.ev.length, text });
+  closeModal(); changed(); toast(text, 3000);
+  return true;
+}
+function umFenster(sh, art) {
+  const L = umPlaetze(), fps = S.ver.manifest.fps, i = L.findIndex((s) => s.id === sh.id);
+  const lenTxt = (s) => durTxt((s.v_out - s.v_in) / fps);
+  const zeile = (s) => {
+    const g = s.id === sh.id ? 'dieser Shot' : tauschGrund(s);
+    const diff = (s.v_out - s.v_in) - (sh.v_out - sh.v_in);
+    const d = !g && art === 'platz' && diff ? ` · <span class="hint">${diff > 0 ? 'länger' : 'kürzer'}</span>` : '';
+    return `<button class="um-zeile${g ? ' aus' : ''}" data-um="${esc(s.id)}" ${g ? 'disabled' : ''}>
+      <b>Shot ${+s.nr}</b> · ${BTV.fmtTc(s.v_in, fps)} · ${esc(shotName(s))} · ${lenTxt(s)}${d}${g && s.id !== sh.id ? ` <span class="hint">· gesperrt</span>` : ''}${s.id === sh.id ? ' <span class="hint">· dieser</span>' : ''}</button>`;
+  };
+  modal(`<h2>${art === 'platz' ? '⇄ Shot ' + (+sh.nr) + ' tauschen mit …' : '↦ Shot ' + (+sh.nr) + ' verschieben an den Platz von …'}</h2>
+    <p class="hint">${art === 'platz' ? 'Die beiden Shots tauschen ihren Inhalt.' : 'Die Shots dazwischen rücken je einen Platz weiter.'}
+      Die Schnitte bleiben, wo sie sind (Musik und Ton unverändert): Jeder Inhalt wird auf die Länge seines neuen Platzes gekürzt bzw. aus dem Footage verlängert.</p>
+    <div class="um-liste">${L.map(zeile).join('')}</div>
+    <div class="row"><button id="umZu">Abbrechen</button></div>`, (b) => {
+    b.querySelector('#umZu').onclick = closeModal;
+    const aktiv = b.querySelector(`[data-um="${CSS.escape(sh.id)}"]`); if (aktiv) aktiv.scrollIntoView({ block: 'center' });
+    b.querySelectorAll('[data-um]:not([disabled])').forEach((x) => { x.onclick = () => {
+      const j = L.findIndex((s) => s.id === x.dataset.um), Y = L[j];
+      if (art === 'platz') { umAnwenden(umPlan([[sh, Y], [Y, sh]]), `Shot ${+sh.nr} ⇄ Shot ${+Y.nr} getauscht`); return; }
+      const paare = [];
+      if (j < i) { paare.push([L[j], sh]); for (let k = j + 1; k <= i; k++) paare.push([L[k], L[k - 1]]); }
+      else { for (let k = i; k < j; k++) paare.push([L[k], L[k + 1]]); paare.push([L[j], sh]); }
+      umAnwenden(umPlan(paare), `Shot ${+sh.nr} an den Platz von Shot ${+Y.nr} verschoben (${paare.length} Plätze)`);
+    }; });
+  });
 }
 
 /* ---------- Clip tauschen: Blatt mit Shortlist-Bereichen zuerst, darunter alle Clips ----------
