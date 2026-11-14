@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9v';
+const APP_VERSION = 'v4.9w';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -88,6 +88,7 @@ function tcClip(sec, fps) {
 }
 const durTxt = (s) => (s < 60 ? `${s.toFixed(1).replace('.', ',')} s` : `${Math.floor(s / 60)}:${pad(s % 60)} min`);
 const fmtGB = (b) => (b / 1e9).toFixed(2).replace('.', ',') + ' GB';
+const mbGb = (b) => (b < 1e9 ? Math.max(1, Math.round(b / 1e6)) + ' MB' : fmtGB(b));
 function isoToSec(iso) { return Date.parse(iso + 'Z') / 1000; }
 function toast(msg, ms = 2200) {
   const t = $('toast'); t.textContent = msg; t.classList.remove('hidden');
@@ -189,6 +190,7 @@ async function bkOffen(nurPid) {
   const out = [];
   for (const link of await bkAlleLinks()) {
     if (nurPid && link.project_id !== nurPid) continue;
+    if (link.abgeschlossen) continue;   // v4.9w: abgeschlossen → keine Versionen mehr anbieten
     let r;
     try { r = await (await fetch(`${link.url}/v1/versionen?k=${encodeURIComponent(link.key)}`)).json(); } catch { continue; }
     if (!r || !r.ok) continue;
@@ -200,6 +202,9 @@ async function bkOffen(nurPid) {
 const angebotHtml = ({ v }, i) => `<div class="proj neu"><div class="info"><div class="name">📥 ${esc(v.sequenz)}</div>
   <div class="meta">${esc(v.projekt || '')} · neue Version zum Prüfen · ${durTxt(v.dauer || 0)} · ${(v.bytes / 1e6).toFixed(0)} MB</div></div>
   <button class="primary" data-laden="${i}">Laden</button></div>`;
+const fertigHtml = (l, i) => `<div class="proj"><div class="info"><div class="name">🏁 ${esc(l.projekt || (l.aufgeraeumt && l.aufgeraeumt.projekt) || 'Projekt')}</div>
+  <div class="meta">abgeschlossen · nichts mehr auf diesem Gerät gespeichert</div></div>
+  <button class="primary" data-fin="${i}">Final-Links</button><button class="ghost danger" data-finweg="${i}" title="Eintrag entfernen">✕</button></div>`;
 let angebotLauf = 0;
 async function bkAngeboteZeigen() {
   const box = $('bkAngebote'); if (!box) return;
@@ -207,11 +212,26 @@ async function bkAngeboteZeigen() {
   const links = await bkAlleLinks().catch(() => []);
   const [liste, roh] = await Promise.all([bkOffen().catch(() => []), bkRohOffen().catch(() => [])]);
   if (lauf !== angebotLauf || $('home').classList.contains('hidden')) return;
-  box.innerHTML = roh.map(rohHtml).join('') + liste.map(angebotHtml).join('')
+  const fertigListe = [];
+  for (const l of links) if (l.abgeschlossen && !(await projAufGeraet(l.project_id))) fertigListe.push(l);
+  if (lauf !== angebotLauf) return;
+  box.innerHTML = fertigListe.map(fertigHtml).join('') + roh.map(rohHtml).join('') + liste.map(angebotHtml).join('')
     // Home-Bildschirm-App ohne Link (z. B. vorher ohne Link hinzugefügt): Link aus der Nachricht einfügen
     + (!links.length && standalone() ? `<div class="proj neu"><div class="info"><div class="name">🔗 Feedback-Link von Blue Tacit</div>
       <div class="meta">Link in der Nachricht lange drücken → „Kopieren“, dann hier tippen</div></div><button class="primary" id="bkPaste">Link einfügen</button></div>` : '');
   box.querySelectorAll('[data-laden]').forEach((b) => b.onclick = () => bkLaden(liste[+b.dataset.laden]));
+  box.querySelectorAll('[data-fin]').forEach((b) => b.onclick = async () => {
+    const l = fertigListe[+b.dataset.fin];
+    try { const j = await (await fetch(`${l.url}/v1/final?k=${encodeURIComponent(l.key)}`)).json(); if (j.final) return finFenster(j.final, l); } catch { /* offline */ }
+    toast('Final-Dateien noch nicht da (oder kein Internet)', 3000);
+  });
+  box.querySelectorAll('[data-finweg]').forEach((b) => b.onclick = () => {
+    const l = fertigListe[+b.dataset.finweg];
+    modal(`<h2>Eintrag entfernen?</h2><p>„${esc(l.projekt || '')}“ verschwindet von der Startseite. Die Final-Dateien in OneDrive bleiben; den Link
+      hast du auch per Mitteilung bekommen.</p><div class="row"><button onclick="closeModal()">Abbrechen</button><span class="grow"></span><button id="fwJa" class="primary">Entfernen</button></div>`, (m) => {
+      m.querySelector('#fwJa').onclick = async () => { await DB.del('state', '__bk__' + l.project_id).catch(() => {}); closeModal(); showHome(); };
+    });
+  });
   box.querySelectorAll('[data-roh]').forEach((b) => b.onclick = () => bkRohLaden(roh[+b.dataset.roh].link));
   const pb = $('bkPaste'); if (pb) pb.onclick = bkLinkEinfuegen;
   if (liste.length) log('versionen-angeboten', { n: liste.length });
@@ -286,7 +306,8 @@ async function bkRohOffen() {
   for (const link of await bkAlleLinks()) {
     let r;
     try { r = await (await fetch(`${link.url}/v1/link?k=${encodeURIComponent(link.key)}`)).json(); } catch { continue; }
-    if (!r || !r.ok || !r.rohmaterial) continue;
+    if (r && r.ok && r.abgeschlossen && !link.abgeschlossen) { link.abgeschlossen = { zeit: null }; await DB.put('state', link, '__bk__' + link.project_id).catch(() => {}); }
+    if (!r || !r.ok || !r.rohmaterial || link.abgeschlossen) continue;
     const p = await projAufGeraet(link.project_id);
     if (!p || p.missing) out.push({ link: { ...link, projekt: r.projekt || link.projekt }, p });
   }
@@ -3077,8 +3098,11 @@ async function bkSetup(key, url) {
   try { r = await (await fetch(`${url}/v1/link?k=${encodeURIComponent(key)}`)).json(); }
   catch { toast('Briefkasten nicht erreichbar – Link später noch einmal öffnen', 5000); log('bk-setup-netz'); return; }
   if (!r.ok) { toast('Dieser Senden-Link ist ungültig oder gesperrt', 5000); log('bk-setup-abgelehnt'); return; }
-  await DB.put('state', { key, url, name: r.name, projekt: r.projekt, project_id: r.project_id, eingerichtet: Date.now() }, '__bk__' + r.project_id);
-  log('bk-eingerichtet', { projekt: r.projekt, name: r.name, rohmaterial: !!r.rohmaterial });
+  const alt = await bkLink(r.project_id);
+  await DB.put('state', { key, url, name: r.name, projekt: r.projekt, project_id: r.project_id, eingerichtet: Date.now(),
+    ...(r.abgeschlossen || (alt && alt.abgeschlossen) ? { abgeschlossen: (alt && alt.abgeschlossen) || { zeit: null }, aufgeraeumt: alt && alt.aufgeraeumt } : {}) }, '__bk__' + r.project_id);
+  log('bk-eingerichtet', { projekt: r.projekt, name: r.name, rohmaterial: !!r.rohmaterial, abgeschlossen: !!r.abgeschlossen });
+  if (r.abgeschlossen) { toast(`🏁 „${r.projekt}“ ist abgeschlossen – die Final-Links findest du auf der Startseite`, 5000); bkAngeboteZeigen(); return; }
   const vorhanden = r.rohmaterial ? await projAufGeraet(r.project_id) : null;
   if (r.rohmaterial && (!vorhanden || vorhanden.missing)) {
     const link = { key, url, name: r.name, projekt: r.projekt, project_id: r.project_id };
@@ -3234,6 +3258,7 @@ async function bkSendenFragen() {
   if (link.team === undefined) {
     try { const r = await (await fetch(`${link.url}/v1/link?k=${encodeURIComponent(link.key)}`)).json(); if (r && r.ok) { link.team = !!r.rohmaterial; await DB.put('state', link, '__bk__' + pid); } } catch { /* offline */ }
   }
+  if (link.abgeschlossen || (S.ps && S.ps.abgeschlossen)) return abgeschlossenFenster(link);
   const hatVersion = !!(S.ps && S.ps.versions.length);
   const abschlussKnopf = hatVersion ? `<button id="bsAbschluss" class="pn-rec" style="background:var(--panel2)">🏁 Projekt abschließen – Endergebnis passt</button>` : '';
   if (!link.team) {   // Kunden: wie bisher direkt senden – mit Version zusätzlich „Projekt abschließen“ (v4.9v)
@@ -3292,6 +3317,7 @@ function abschlussFenster() {
       const abschluss = { version_id: v.version_id, export_id: v.export_id, sequenz: v.manifest.sequenz,
         zwecke: boxen.filter((x) => x.checked).map((x) => x.value), notiz: b.querySelector('#abNotiz').value.trim().slice(0, 500) };
       closeModal(); log('senden-abschluss', { version: v.version_id, zwecke: abschluss.zwecke });
+      abgeschlossenMerken({ sequenz: abschluss.sequenz, zwecke: abschluss.zwecke, zeit: new Date().toISOString() });   // v4.9w: bleibt abgeschlossen
       bkSend(false, true, false, abschluss);
     };
   });
@@ -3307,20 +3333,88 @@ async function finPruefen() {
     finDaten = (await r.json()).final || null;
     b.classList.toggle('hidden', !finDaten);
     if (!finDaten) return;
+    if (!link.abgeschlossen) await abgeschlossenMerken({ sequenz: finDaten.sequenz, zeit: finDaten.erstellt });   // z. B. auf einem anderen Gerät abgeschlossen
     const neu = S.ps && S.ps.finalGesehen !== finDaten.erstellt;
     b.classList.toggle('neu', neu);
     if (neu && $('modal').classList.contains('hidden')) finFenster();
   } catch { /* offline */ }
 }
-function finFenster() {
-  if (!finDaten) return;
+function finFenster(fd = finDaten, link = null) {
+  if (!fd) return;
   const name = { instagram: 'Instagram', tiktok: 'TikTok', youtube: 'YouTube', master: 'Master' };
-  modal(`<h2>🏁 Deine Final-Dateien</h2><p class="hint">${esc(finDaten.sequenz || '')} – tippen öffnet OneDrive (dort herunterladen).</p>
-    ${(finDaten.dateien || []).map((d) => `<a class="pn-rec gold" style="display:block;text-align:center;text-decoration:none;margin:8px 0"
+  const aufrOk = !!S.proj && !link;   // Aufräumen aus dem offenen Projekt heraus
+  modal(`<h2>🏁 Deine Final-Dateien</h2><p class="hint">${esc(fd.sequenz || '')} – tippen öffnet OneDrive (dort herunterladen).
+    Die Links bleiben gültig, auch wenn du hier alles löschst.</p>
+    ${(fd.dateien || []).map((d) => `<a class="pn-rec gold" style="display:block;text-align:center;text-decoration:none;margin:8px 0"
       href="${esc(d.url)}" target="_blank" rel="noopener">⬇ ${esc(name[d.zweck] || d.zweck)}${d.bytes ? ` · ${(d.bytes / 1e6).toFixed(0)} MB` : ''}</a>`).join('')}
-    <div class="row"><span class="grow"></span><button class="primary" onclick="closeModal()">OK</button></div>`);
-  if (S.ps) { S.ps.finalGesehen = finDaten.erstellt; save(); }
+    ${aufrOk ? '<button id="finAufr" class="pn-rec" style="background:var(--panel2)">🧹 Alles löschen &amp; Speicher freigeben</button>' : ''}
+    <div class="row"><span class="grow"></span><button class="primary" onclick="closeModal()">OK</button></div>`, (b) => {
+    const a = b.querySelector('#finAufr'); if (a) a.onclick = () => aufraeumenFragen();
+  });
+  if (S.ps && !link) { S.ps.finalGesehen = fd.erstellt; save(); }
   $('btnFinal').classList.remove('neu');
+}
+/* ---------- Abgeschlossen + Aufräumen (Robert 14.11., v4.9w) ----------
+ * Einmal abgeschlossen bleibt abgeschlossen: kein Senden/Abschließen mehr, nur Final-Links + Aufräumen. Aufräumen löscht auf DIESEM
+ * Gerät alles zum Projekt (Footage, Versionen, Sprachnotizen, Anhänge, Stand) und im Briefkasten Versionen, Notizen, Musik und Stände
+ * (POST /v1/aufraeumen; vor dem Melden der Final-Dateien merkt er es sich). Übrig bleibt nur die Startseiten-Kachel „🏁 abgeschlossen“
+ * mit den Final-Links (✕ entfernt auch die). Ohne Aufräumen löschen sich die Daten im Briefkasten nach 30–60 Tagen von selbst. */
+async function abgeschlossenMerken(info) {
+  const pid = S.proj ? await projPid(S.proj) : null, link = pid ? await bkLink(pid) : null;
+  if (link && !link.abgeschlossen) { link.abgeschlossen = info; await DB.put('state', link, '__bk__' + pid); }
+  if (S.ps && !S.ps.abgeschlossen) { S.ps.abgeschlossen = info; save(); }
+}
+function abgeschlossenFenster(link) {
+  const info = link.abgeschlossen || (S.ps && S.ps.abgeschlossen) || {};
+  modal(`<h2>🏁 Projekt abgeschlossen</h2>
+    <p>${esc(info.sequenz || (finDaten && finDaten.sequenz) || link.projekt || '')} ist das Endergebnis${info.zeit ? ` (seit ${new Date(info.zeit).toLocaleDateString('de-DE')})` : ''}.
+    ${finDaten ? 'Deine Final-Dateien liegen bereit.' : 'Blue Tacit erstellt die Final-Dateien – du bekommst eine Mitteilung mit dem Link.'}</p>
+    ${finDaten ? '<button id="agFinal" class="gold pn-rec">🏁 Final-Dateien öffnen</button>' : ''}
+    <button id="agAufr" class="pn-rec" style="background:var(--panel2)">🧹 Alles löschen &amp; Speicher freigeben</button>
+    <p class="hint">Löscht alle Videos, Versionen und Sprachnotizen dieses Projekts von diesem Gerät und aus dem Blue-Tacit-Briefkasten.
+    Die Final-Dateien in OneDrive bleiben.</p>
+    <div class="row"><span class="grow"></span><button onclick="closeModal()">Schließen</button></div>`, (b) => {
+    const f = b.querySelector('#agFinal'); if (f) f.onclick = () => finFenster();
+    b.querySelector('#agAufr').onclick = () => aufraeumenFragen();
+  });
+}
+async function aufraeumenFragen() {
+  const proj = S.proj; if (!proj) return;
+  const pid = await projPid(proj), link = await bkLink(pid);
+  if ((await bkQ(pid)).length) { toast('Erst muss alles gesendet sein (Internet?) – dann nochmal', 4000); bkRetry(); return; }
+  const keys = (await DB.keys('files')).filter((k) => String(k).startsWith(proj.id + '/'));
+  let bytes = 0; for (const k of keys) { const b = await DB.get('files', k).catch(() => null); bytes += (b && b.size) || 0; }
+  modal(`<h2>🧹 Alles löschen?</h2>
+    <p>Auf diesem Gerät werden <b>${mbGb(bytes)}</b> frei: alle Videos, Versionen, Sprachnotizen, Anhänge und dein Stand zu
+    „${esc(proj.meta.name)}“. Im Blue-Tacit-Briefkasten werden die Versionen und gesendeten Daten gelöscht.</p>
+    <p class="hint">Die Final-Dateien in OneDrive bleiben – die Links findest du weiter auf der Startseite unter „🏁 abgeschlossen“.
+    Das lässt sich nicht rückgängig machen.</p>
+    <div class="row"><button onclick="closeModal()">Abbrechen</button><span class="grow"></span><button id="aufrJa" class="primary danger">Alles löschen</button></div>`, (b) => {
+    b.querySelector('#aufrJa').onclick = async () => {
+      b.querySelector('#aufrJa').disabled = true; b.querySelector('#aufrJa').textContent = 'Lösche …';
+      let server = 'offline';
+      if (link) { try { const r = await fetch(`${link.url}/v1/aufraeumen?k=${encodeURIComponent(link.key)}`, { method: 'POST' }); const j = await r.json(); server = j.ok ? (j.sofort ? 'geloescht' : 'vorgemerkt') : 'fehler'; } catch { /* offline: Briefkasten löscht selbst nach 30–60 Tagen */ } }
+      await geraetLeeren(proj);
+      if (link) { link.aufgeraeumt = { zeit: new Date().toISOString(), server, bytes, projekt: proj.meta.name }; link.abgeschlossen = link.abgeschlossen || {}; await DB.put('state', link, '__bk__' + pid); }
+      log('aufraeumen', { mb: Math.round(bytes / 1e6), server });
+      S.proj = null; S.ps = null; S.state = null; S.ver = null; closeModal();
+      toast(`🧹 ${mbGb(bytes)} freigegeben${server === 'offline' ? ' (Briefkasten löscht sich in 30–60 Tagen selbst)' : ''} ✓`, 4000);
+      showHome();
+    };
+  });
+}
+// Alles eines Projekts aus IndexedDB: Dateien (Footage, Filmstreifen, Versionen), alle Notizen/Anhänge im Stand, Stand, Projekt
+async function geraetLeeren(proj) {
+  if (typeof stopAlles === 'function') stopAlles();
+  stopPlay();
+  for (const k of (await DB.keys('files')).filter((k) => String(k).startsWith(proj.id + '/'))) await DB.del('files', k).catch(() => {});
+  const st = await DB.get('state', proj.id).catch(() => null);
+  const ids = new Set();
+  const lauf = (o) => { if (Array.isArray(o)) o.forEach(lauf); else if (o && typeof o === 'object') { if (typeof o.id === 'string' && (o.mime || o.art || o.dur !== undefined)) ids.add(o.id); Object.values(o).forEach(lauf); } };
+  lauf(st);
+  for (const id of ids) await DB.del('notes', id).catch(() => {});
+  await DB.del('state', proj.id).catch(() => {}); await DB.del('projects', proj.id).catch(() => {});
+  if (S.urls) { for (const u of S.urls.values()) { try { URL.revokeObjectURL(u); } catch { /* egal */ } } S.urls.clear(); }
 }
 $('btnFinal').onclick = () => finFenster();
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') finPruefen(); });
