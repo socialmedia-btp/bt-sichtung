@@ -125,6 +125,7 @@ async function startSlip(opt) {
   if (sitzung !== SITZUNG || !SL) return;                          // inzwischen gewechselt
   pv.style.opacity = ''; pv.classList.remove('hidden'); pvLast.classList.remove('hidden'); $('pvBadge').classList.remove('hidden');
   log('slip-start', { shot: sh.id, src_in: SL.srcIn });
+  if (sh.ersatz) toast(sh.ersatz.art === 'topaz' ? '✨ Topaz-Shot: nach der Änderung kommt das Original mit gleicher Zeitlupe rein, markiert „Topaz neu rechnen“' : 'Zeitlupe/Ausschnitt: wird nach der Änderung aus dem Original neu erzeugt', 4500);
   slipResize(); slipUpdate(true); resizeCanvas();
 }
 // auf das Raster „1 Sequenzbild“ rund um den ursprünglichen Start einrasten, innerhalb des Clips bzw. Bereichs
@@ -450,7 +451,7 @@ function openTauschListe(sh) {
   const g = tauschGrund(sh); if (g) { toast('Tauschen nicht möglich: ' + g, 3500); return; }
   TS.sh = sh; TS.q = ''; TS.track = '';
   modal(`<h2>Shot ${+sh.nr} tauschen</h2>
-    <p class="hint">Länge bleibt ${durTxt((sh.v_out - sh.v_in) / S.ver.manifest.fps)} · Ton bleibt · danach Inhalt noch verschiebbar</p>
+    <p class="hint">Länge bleibt ${durTxt((sh.v_out - sh.v_in) / S.ver.manifest.fps)} · Ton bleibt · danach Inhalt noch verschiebbar</p>${ersatzHinweis(sh, true)}
     <div class="ts-filter"><input id="tsQ" type="search" placeholder="Clip suchen"><span id="tsTracks" class="ts-tracks"></span></div>
     <div id="tsList" class="ts-list"></div>
     <div class="row"><button id="tsClose">Abbrechen</button></div>`, (b) => {

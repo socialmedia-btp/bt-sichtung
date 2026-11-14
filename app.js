@@ -800,11 +800,19 @@ function updateHud(c) {
     updateNoteTarget();
   }
   $('hud').innerHTML = !c ? '' : sg
-    ? `<span class="cam">Shot ${+sg.shot.nr}</span> · ${esc(shotName(sg.shot))} · <span class="${sg.shot.editierbar ? 'ok' : 'lock'}">${sg.shot.editierbar ? 'änderbar' : 'gesperrt: ' + esc(sg.shot.grund || '')}</span>`
+    ? `<span class="cam">Shot ${+sg.shot.nr}</span> · ${esc(shotName(sg.shot))} · <span class="${sg.shot.editierbar ? 'ok' : 'lock'}">${sg.shot.editierbar ? 'änderbar' : 'gesperrt: ' + esc(sg.shot.grund || '')}</span>${ersatzHinweis(sg.shot)}`
     : `<span class="cam" style="color:${tr.color}">${esc(tr.label)}</span> · ${esc(c.name)}`;
   $('tc').innerHTML = `<b>${clock(S.T, fps)}</b>` + (c ? ` · Clip ${tcClip(S.T - c.s, fps)} / ${tcClip(c.dur, fps)} · ${fps} fps` : '');
 }
 
+// v4.9x: Shot liegt in Premiere als Zeitlupe/Topaz-Render vor, Framepoint arbeitet aufs Original-Footage
+function ersatzHinweis(sh, lang) {
+  const e = sh && sh.ersatz; if (!e) return '';
+  const t = sh.tempo && Math.abs(sh.tempo - 1) > 1e-3 ? `Zeitlupe ${String(Math.round(sh.tempo * 100) / 100).replace('.', ',')}×` : '';
+  if (!lang) return ` · <span class="ersatz">${e.art === 'topaz' ? '✨ Topaz' + (t ? ' ' + t.slice(9) : '') : t || 'Ausschnitt'}</span>`;
+  return `<p class="hint ersatz-hint">${e.art === 'topaz' ? '✨ Topaz-Zeitlupe: Nach der Änderung kommt das Original-Footage mit gleicher Zeitlupe hinein – markiert als <b>„Topaz neu rechnen“</b>.'
+    : `${t || 'Ausschnitt'}: Nach der Änderung wird die Stelle aus dem Original-Footage neu erzeugt${t ? ' (gleiche Zeitlupe)' : ''}.`}</p>`;
+}
 function setPlayIcons(on) { document.querySelectorAll('[data-act=play]').forEach((b) => { b.textContent = on ? '⏸' : '▶'; }); }
 async function play() {
   let c = shownClip();

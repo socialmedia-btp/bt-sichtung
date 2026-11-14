@@ -418,3 +418,7 @@ body.fs.reel .cutbar { bottom: 350px; }
 .fb-farbe.an { box-shadow: 0 0 0 3px var(--panel), 0 0 0 5px var(--text); }
 .fb-dicke { padding: 0 10px; font-size: 14px; }
 .fb-dicke.an { background: var(--text); color: var(--bg); }
+
+/* Ersatzmedium (v4.9x) */
+.ersatz { color: #ffd60a; }
+.ersatz-hint { color: #ffd60a; }

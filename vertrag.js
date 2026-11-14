@@ -28,7 +28,13 @@
     const head = a.typ === 'slip'
       ? `Shot ${shot.nr} · ${shot.clip} · Inhalt ${a.delta_s >= 0 ? '+' : '−'}${fmtS(Math.abs(a.delta_s))} s (Quelle ${q0} → ${q1})`
       : `Shot ${shot.nr} · ${shot.clip} → ${n.clip} (Quelle ${q1})`;
-    return `${head} · Länge gleich · ${v} · Ton bleibt`;
+    return `${head} · Länge gleich · ${v} · Ton bleibt` + ersatzText(shot);
+  }
+  // Zusatz für Shots auf Ersatzmedium (v4.9x: Zeitlupe/Topaz → Original) – gleich wie bt_v4.ersatz_text
+  function ersatzText(shot) {
+    const e = shot.ersatz; if (!e) return '';
+    const t = shot.tempo || 1;
+    return (Math.abs(t - 1) > 1e-3 ? ` · Zeitlupe ${fmtS(t)}×` : '') + (e.art === 'topaz' ? ' · TOPAZ NEU RECHNEN' : '');
   }
   function auftrag(version, shot, z, revision = 1) {
     const typ = z.clip === shot.clip ? 'slip' : 'tausch';
@@ -38,7 +44,7 @@
       change_id: z.change_id, revision, typ, shot: shot.id, nr: shot.nr, v_in: shot.v_in, v_out: shot.v_out,
       vorher: { clip: shot.clip, src_in: shot.src_in, src_out: shot.src_out, src_fps: shot.src_fps },
       nachher: { clip: z.clip, src_in: z.src_in, src_out: zOut, src_fps: z.src_fps, bereich: z.bereich || 'ganzer_clip' },
-      tempo: 1.0, audio_policy: 'keep_version_audio', folgen: [...(shot.folgen || [])], pruefung: [],
+      tempo: shot.ersatz ? (shot.tempo || 1.0) : 1.0, audio_policy: 'keep_version_audio', folgen: [...(shot.folgen || [])], pruefung: [],
     };
     if (Array.isArray(z.bereich_frames)) a.nachher.bereich_frames = [...z.bereich_frames];   // Shortlist-Grenze geht mit (apply_edits prüft)
     if (typ === 'slip') {
