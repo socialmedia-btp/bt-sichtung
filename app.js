@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9u';
+const APP_VERSION = 'v4.9v';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -3119,6 +3119,7 @@ async function bkRender() {
   b.textContent = fehler ? 'Senden ⚠' : wartet ? 'Senden ⏳' : gesendet ? 'Gesendet ✓' : 'Senden';
   b.title = fehler ? 'Ein Stand wurde abgelehnt – erneut senden oder als Datei speichern' : wartet ? 'Wartet auf Internet – wird automatisch nachgesendet' : `An Blue Tacit senden (${link.name})`;
   muPruefen(false);   // Musikvorschläge für diesen Link?
+  finPruefen();       // Final-Dateien (v4.9v)?
 }
 // Ein Stand-JSON an den Briefkasten (60 s Zeitgrenze). Rückgabe: 'ok' | 'netz' (→ später nochmal) | Fehlertext (endgültig)
 async function bkPost(link, body) {
@@ -3140,7 +3141,7 @@ async function bkQ(pid) { const q = await DB.get('state', bkQKey(pid)).catch(() 
 async function bkQSet(pid, q) { if (q.length) await DB.put('state', q, bkQKey(pid)); else await DB.del('state', bkQKey(pid)).catch(() => {}); }
 let bkLaeuft = Promise.resolve();
 function bkSerial(fn) { const p = bkLaeuft.then(fn, fn); bkLaeuft = p.catch(() => {}); return p; } // Übertragungen nacheinander
-async function bkSend(silent, fertig, musikBitte = true) {
+async function bkSend(silent, fertig, musikBitte = true, abschluss = null) {
   if (rec || recStarting) { if (!silent) toast('Erst die Sprachnotiz beenden'); return; }
   const proj = S.proj, pid = await projPid(proj), link = await bkLink(pid);
   if (!link) return;
@@ -3148,6 +3149,7 @@ async function bkSend(silent, fertig, musikBitte = true) {
   const gen = S.ps.gen || 0;
   const data = await buildExport(); // ohne Diagnose-Log (Astra F03)
   if (fertig) { data.fertig = true; data.fertig_zeit = new Date().toISOString(); data.musik_bitte = !!musikBitte; }   // nur dieser Stand löst bei Blue Tacit die Musik aus
+  if (abschluss) data.abschluss = { ...abschluss, zeit: new Date().toISOString() };   // v4.9v: Projekt abschließen → Final-Dateien + OneDrive-Link
   const notes = bkNotizenAuslagern(data);
   const body = JSON.stringify(data);
   await bkQSet(pid, [...(await bkQ(pid)).filter((x) => x.fehler), { stand_id: data.stand_id, body, notes, gen, t: Date.now() }]);
@@ -3203,8 +3205,10 @@ async function bkFlush(pid, link, silent) {
       for (let k = q.length - 1; k >= 0; k--) if (q[k].fehler && (q[k].gen || 0) <= (e.gen || 0)) q.splice(k, 1);
       if (S.ps && S.proj && (await projPid(S.proj)) === pid) { S.ps.bkGen = Math.max(S.ps.bkGen || 0, e.gen || 0); save(); }
       if (!silent) {
-        const fertig = /"fertig":true/.test(e.body);
-        toast(fertig ? 'Danke! Blue Tacit sucht jetzt die Musik – du bekommst Bescheid ✓' : 'An Blue Tacit gesendet ✓', fertig ? 4000 : 2500);
+        const fertig = /"fertig":true/.test(e.body), abg = /"abschluss":\{/.test(e.body), musik = /"musik_bitte":true/.test(e.body);
+        toast(abg ? '🏁 Danke! Blue Tacit erstellt jetzt deine Final-Dateien – du bekommst den OneDrive-Link ✓'
+          : fertig && musik ? 'Danke! Blue Tacit sucht jetzt die Musik – du bekommst Bescheid ✓' : fertig ? 'Danke! Blue Tacit arbeitet es ab – du bekommst Bescheid ✓'
+          : 'An Blue Tacit gesendet ✓', fertig ? 4000 : 2500);
         setTimeout(pushFragen, fertig ? 4200 : 2700);
       }
     } else {
@@ -3230,7 +3234,19 @@ async function bkSendenFragen() {
   if (link.team === undefined) {
     try { const r = await (await fetch(`${link.url}/v1/link?k=${encodeURIComponent(link.key)}`)).json(); if (r && r.ok) { link.team = !!r.rohmaterial; await DB.put('state', link, '__bk__' + pid); } } catch { /* offline */ }
   }
-  if (!link.team) return bkSend(false);
+  const hatVersion = !!(S.ps && S.ps.versions.length);
+  const abschlussKnopf = hatVersion ? `<button id="bsAbschluss" class="pn-rec" style="background:var(--panel2)">🏁 Projekt abschließen – Endergebnis passt</button>` : '';
+  if (!link.team) {   // Kunden: wie bisher direkt senden – mit Version zusätzlich „Projekt abschließen“ (v4.9v)
+    if (!hatVersion) return bkSend(false);
+    modal(`<h2>An Blue Tacit senden</h2>
+      <button id="bsFeedback" class="gold pn-rec">Feedback senden</button>${abschlussKnopf}
+      <p class="hint">„Projekt abschließen“ nur tippen, wenn das Video so fertig ist. Dann wählst du, wofür du es brauchst, und bekommst die fertige Datei als OneDrive-Link.</p>
+      <div class="row"><span class="grow"></span><button onclick="closeModal()">Abbrechen</button></div>`, (b) => {
+      b.querySelector('#bsFeedback').onclick = () => { closeModal(); bkSend(false); };
+      b.querySelector('#bsAbschluss').onclick = () => abschlussFenster();
+    });
+    return;
+  }
   // Musik schon gewählt (Robert 13.11.) → „fertig“ fordert keine Musik mehr an; der Stand trägt musik_bitte: false
   let musikDa = !!(muDaten && muDaten.wahl && Object.keys(muDaten.wahl).length);
   if (!musikDa) { try { const r = await fetch(`${link.url}/v1/musik?k=${encodeURIComponent(link.key)}`); const j = r.ok ? await r.json() : null; musikDa = !!(j && j.musik && j.musik.wahl && Object.keys(j.musik.wahl).length); } catch { /* offline */ } }
@@ -3239,14 +3255,76 @@ async function bkSendenFragen() {
     <p class="hint">Deine Arbeit wird auf dem iPad <b>automatisch gespeichert</b> – auch wenn es sich sperrt oder die App zugeht. Ein
     Zwischenstand ist nur eine zusätzliche Sicherung.</p>
     <button id="bsZwischen" class="pn-rec" style="background:var(--panel2)">Zwischenstand sichern</button>
-    <button id="bsFertig" class="gold pn-rec">${fertigTxt}</button>
+    <button id="bsFertig" class="gold pn-rec">${fertigTxt}</button>${abschlussKnopf}
     <p class="hint">„Sichtung fertig“ erst tippen, wenn du alles durchgesehen und deine Projektnotizen aufgenommen hast. ${musikDa
-      ? 'Die Musik ist schon ausgewählt – es wird keine neue gesucht.' : 'Dann sucht Blue Tacit die Musik und du bekommst Bescheid.'}</p>
+      ? 'Die Musik ist schon ausgewählt – es wird keine neue gesucht.' : 'Dann sucht Blue Tacit die Musik und du bekommst Bescheid.'}${hatVersion
+      ? ' „Projekt abschließen“ = das Video ist fertig: du wählst, wofür du es brauchst, und bekommst die Datei als OneDrive-Link.' : ''}</p>
     <div class="row"><span class="grow"></span><button onclick="closeModal()">Abbrechen</button></div>`, (b) => {
     b.querySelector('#bsZwischen').onclick = () => { closeModal(); log('senden-zwischen', {}); bkSend(false); };
     b.querySelector('#bsFertig').onclick = () => { closeModal(); log('senden-fertig', { musik: !musikDa }); bkSend(false, true, !musikDa); };
+    if (hatVersion) b.querySelector('#bsAbschluss').onclick = () => abschlussFenster();
   });
 }
+/* Projekt abschließen (Lena 14.11., v4.9v): Endergebnis passt → Version + Zweck wählen (Instagram, TikTok, YouTube, Master).
+ * Der Stand trägt `abschluss: {version_id, export_id, sequenz, zwecke, notiz}` und gilt als fertig (weckt den Wächter auf Roberts PC).
+ * Dort baut die Pipeline je Zweck die passende Datei, legt sie in OneDrive ab und schickt den Link zurück (🏁 oben in der App). */
+const ZWECKE = [['instagram', 'Instagram', '9:16, 1080×1920, für Reels'], ['tiktok', 'TikTok', '9:16, 1080×1920'],
+  ['youtube', 'YouTube', 'volle Qualität für YouTube/Shorts'], ['master', 'Master', 'Original-Export, höchste Qualität (Archiv)']];
+function abschlussFenster() {
+  const vs = S.ps.versions;
+  const akt = vs.find((v) => v.version_id === S.ps.activeVersion) || vs[vs.length - 1];
+  modal(`<h2>🏁 Projekt abschließen</h2>
+    <p class="hint">Welche Version ist das Endergebnis – und wofür brauchst du sie? Blue Tacit erstellt die Dateien und schickt dir einen
+    OneDrive-Link (zum Herunterladen, ohne Anmeldung).</p>
+    <label class="hint">Version</label>
+    <select id="abVer" style="width:100%;font-size:16px;margin:4px 0 12px;padding:8px;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:8px">${vs.map((v) =>
+      `<option value="${esc(v.version_id)}"${v === akt ? ' selected' : ''}>${esc(v.manifest.sequenz)}</option>`).join('')}</select>
+    <div id="abZwecke">${ZWECKE.map(([id, name, info]) => `<label style="display:flex;gap:10px;align-items:center;padding:10px 0;font-size:17px">
+      <input type="checkbox" value="${id}" style="width:24px;height:24px"${id === 'instagram' ? ' checked' : ''}> <b>${name}</b>
+      <span class="hint" style="margin:0">${info}</span></label>`).join('')}</div>
+    <input id="abNotiz" type="text" placeholder="Anmerkung (optional)" style="width:100%;font-size:16px;margin:8px 0">
+    <div class="row"><span class="grow"></span><button onclick="closeModal()">Abbrechen</button><button id="abOk" class="gold">🏁 Abschließen</button></div>`, (b) => {
+    const ok = b.querySelector('#abOk'), boxen = [...b.querySelectorAll('#abZwecke input')];
+    const pruefen = () => { ok.disabled = !boxen.some((x) => x.checked); };
+    boxen.forEach((x) => x.onchange = pruefen); pruefen();
+    ok.onclick = () => {
+      const v = vs.find((x) => x.version_id === b.querySelector('#abVer').value) || akt;
+      const abschluss = { version_id: v.version_id, export_id: v.export_id, sequenz: v.manifest.sequenz,
+        zwecke: boxen.filter((x) => x.checked).map((x) => x.value), notiz: b.querySelector('#abNotiz').value.trim().slice(0, 500) };
+      closeModal(); log('senden-abschluss', { version: v.version_id, zwecke: abschluss.zwecke });
+      bkSend(false, true, false, abschluss);
+    };
+  });
+}
+/* Final-Dateien (v4.9v): die Pipeline legt je Link {dateien:[{zweck, name, url, bytes}], sequenz} ab → 🏁 oben in der App. */
+let finDaten = null;
+async function finPruefen() {
+  if (!S.proj) return;
+  try {
+    const link = await bkLink(await projPid(S.proj)), b = $('btnFinal');
+    if (!link) { b.classList.add('hidden'); return; }
+    const r = await fetch(`${link.url}/v1/final?k=${encodeURIComponent(link.key)}`); if (!r.ok) return;
+    finDaten = (await r.json()).final || null;
+    b.classList.toggle('hidden', !finDaten);
+    if (!finDaten) return;
+    const neu = S.ps && S.ps.finalGesehen !== finDaten.erstellt;
+    b.classList.toggle('neu', neu);
+    if (neu && $('modal').classList.contains('hidden')) finFenster();
+  } catch { /* offline */ }
+}
+function finFenster() {
+  if (!finDaten) return;
+  const name = { instagram: 'Instagram', tiktok: 'TikTok', youtube: 'YouTube', master: 'Master' };
+  modal(`<h2>🏁 Deine Final-Dateien</h2><p class="hint">${esc(finDaten.sequenz || '')} – tippen öffnet OneDrive (dort herunterladen).</p>
+    ${(finDaten.dateien || []).map((d) => `<a class="pn-rec gold" style="display:block;text-align:center;text-decoration:none;margin:8px 0"
+      href="${esc(d.url)}" target="_blank" rel="noopener">⬇ ${esc(name[d.zweck] || d.zweck)}${d.bytes ? ` · ${(d.bytes / 1e6).toFixed(0)} MB` : ''}</a>`).join('')}
+    <div class="row"><span class="grow"></span><button class="primary" onclick="closeModal()">OK</button></div>`);
+  if (S.ps) { S.ps.finalGesehen = finDaten.erstellt; save(); }
+  $('btnFinal').classList.remove('neu');
+}
+$('btnFinal').onclick = () => finFenster();
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') finPruefen(); });
+setInterval(() => { if (document.visibilityState === 'visible') finPruefen(); }, 180000);
 $('btnSend').onclick = () => bkSendenFragen();
 
 /* ---------- Start ---------- */
