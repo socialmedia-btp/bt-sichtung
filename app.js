@@ -1598,19 +1598,22 @@ new MutationObserver(() => requestAnimationFrame(karteMehr)).observe($('current'
  * Eigene Zeile unter der Version; die Schnitte der Version laufen als feine Linien durch, Tippen dort wirkt wie auf der Version. */
 const WAVE_H = 40;
 const WELLEN = new WeakMap();
-// v5.2: fehlt die Wellenform im Manifest (Version vor v5.0 importiert), aus dem Briefkasten holen – ohne Neu-Import des Videos
+// v5.2: Wellenform aus dem Briefkasten holen – ohne Neu-Import des Videos. v5.3: einmal je Sitzung nachsehen, ob es eine
+// neuere gibt (z. B. nachdem weitere Musikspuren dazugekommen sind), und dann ersetzen.
 const WELLEN_VERSUCHT = new Set();
 async function wellenHolen(ver) {
-  if (!ver || !ver.manifest || ver.manifest.musik_wellen || WELLEN_VERSUCHT.has(ver.version_id)) return;
+  if (!ver || !ver.manifest || WELLEN_VERSUCHT.has(ver.version_id)) return;
   WELLEN_VERSUCHT.add(ver.version_id);
   try {
     const link = await bkLink(await projPid(S.proj)); if (!link) return;
     const r = await (await fetch(`${link.url}/v1/wellen?k=${encodeURIComponent(link.key)}&v=${encodeURIComponent(ver.version_id)}`)).json();
     if (!r || !r.ok || !r.wellen || !r.wellen.daten) return;
+    const alt = ver.manifest.musik_wellen;
+    if (alt && alt.daten === r.wellen.daten && alt.bass === r.wellen.bass) return;
     ver.manifest.musik_wellen = r.wellen;
     log('wellen-geholt', { version: ver.version_id, quelle: r.wellen.quelle });
     save(true);
-    if (S.ver === ver) { resizeCanvas(); toast('♪ Musikspur geladen – links an „♪ Musik“ ziehen macht sie größer', 3500); }
+    if (S.ver === ver) { resizeCanvas(); toast(alt ? '♪ Musikspur aktualisiert' : '♪ Musikspur geladen – links an „♪ Musik“ ziehen macht sie größer', 3500); }
   } catch { /* offline */ }
 }
 // Höhe der Musikspur: links am Spurkopf ziehen (gemerkt je Gerät)
