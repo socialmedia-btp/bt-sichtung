@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v4.9w';
+const APP_VERSION = 'v4.9x';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -2619,7 +2619,9 @@ setTimeout(() => { if (pushGeht() && Notification.permission === 'granted') push
 
 /* ---------- Hilfe ---------- */
 function help() {
-  modal(`<h2>So geht’s</h2><ul>
+  modal(`<h2>So geht’s</h2>
+  <button id="mFeedback" class="primary fb-hilfe">💡 Feedback zum Tool geben</button>
+  <p class="hint fb-hilfe-hint">Etwas unklar, fehlt etwas, nervt etwas? Mit Text, Sprachnachricht, Bildern (zum Einzeichnen) oder Video.</p><ul>
     <li><b>Timeline wischen</b> = spulen (Playhead bleibt in der Mitte). <b>Zwei Finger auseinander</b> = zoomen. Am PC: Mausrad spult, Strg+Mausrad zoomt.</li>
     <li><b>Shortlist-Sequenz (▶★):</b> antippen = dorthin springen. <b>Zwei Finger auseinander</b> = ranzoomen; dann wischen = spulen
       (Abspielkopf bleibt in der Mitte), zwei Finger zusammen = wieder alles sehen. Am PC: Strg+Mausrad zoomt.</li>
@@ -2642,7 +2644,180 @@ function help() {
     <li>Alles wird automatisch auf diesem Gerät gespeichert. <b>Speichern</b> erstellt eine Datei mit deinem Stand; mit <b>Öffnen</b> machst du damit weiter – auch auf einem anderen Gerät, ohne Internet. Die Datei bekommt auch Claude.</li>
   </ul><p class="hint">Framepoint ${APP_VERSION} · Blue Tacit Productions</p>
   <div class="row"><button id="mLog">Log ansehen</button><button onclick="location.href='labor/sync.html'">Sync-Test (Labor)</button><span class="grow"></span><button class="primary" onclick="closeModal()">OK</button></div>`,
-  (b) => { b.querySelector('#mLog').onclick = showLog; });
+  (b) => { b.querySelector('#mLog').onclick = showLog; b.querySelector('#mFeedback').onclick = () => fbFenster(); });
+}
+
+/* ---------- Tool-Feedback (Robert 14.11., v4.9x) ----------
+ * Hilfe → „💡 Feedback zum Tool“: Text, Sprachnachricht, Bilder (vor dem Hochladen bemalen) und Videos zur Verbesserung von Framepoint.
+ * Geht NICHT in den Projekt-Briefkasten (kein Stand, kein OneDrive-Eingang), sondern an /v1/feedback → der Wächter stellt es dem
+ * Framepoint-Entwicklungschat zu. Der Link-Schlüssel des Geräts dient nur als Absender-Nachweis. Entwurf bleibt bis zum Senden (im Speicher). */
+const FB_TEIL = 19 * 1024 * 1024, FB_MAX = 4 * FB_TEIL, FB_ANZ = 6;
+let FB = null, fbRec = null;
+const fbGroesse = (b) => (b < 1e6 ? Math.max(1, Math.round(b / 1e3)) + ' KB' : mbGb(b));
+const fbEntwurf = () => (FB = FB || { id: uid() + uid(), text: '', anhaenge: [] });
+async function fbLinkWaehlen() {
+  const eigen = S.proj ? await projPid(S.proj).then(bkLink).catch(() => null) : null;
+  return (eigen && eigen.key ? eigen : (await bkAlleLinks())[0]) || null;
+}
+function fbFenster() {
+  const f = fbEntwurf();
+  const art = { audio: '🎙 Sprachnachricht', bild: '🖼 Bild', video: '🎬 Video' };
+  modal(`<h2>💡 Feedback zum Tool</h2>
+    <p class="hint">Was fehlt, was nervt, was ist unklar? Das geht direkt an Blue Tacit, um Framepoint zu verbessern – nicht in dein Projekt.</p>
+    <textarea id="fbText" rows="4" class="fb-text" placeholder="Schreib hier, was dir auffällt …">${esc(f.text)}</textarea>
+    <div class="fb-knoepfe">
+      <button id="fbRec" class="${fbRec ? 'rec' : ''}">${fbRec ? '■ Aufnahme beenden' : '🎙 Sprachnachricht'}</button>
+      <button id="fbBild">📷 Bild</button><button id="fbVideo">🎬 Video</button>
+      <input id="fbBildIn" type="file" accept="image/*" multiple hidden><input id="fbVideoIn" type="file" accept="video/*" hidden>
+    </div>
+    <div class="fb-liste">${f.anhaenge.map((a, i) => `<div class="fb-anhang fb-${a.art}">
+      ${a.art === 'bild' ? `<img src="${a.url}" alt="">` : a.art === 'audio' ? `<audio controls src="${a.url}"></audio>` : `<video src="${a.url}#t=0.1" muted playsinline preload="metadata"></video>`}
+      <div class="fb-info">${art[a.art] || '📎'}${a.bemalt ? ' · ✏️' : ''}<br><span class="hint">${fbGroesse(a.blob.size)}${a.dauer ? ' · ' + Math.round(a.dauer) + ' s' : ''}</span></div>
+      ${a.art === 'bild' ? `<button data-fbmal="${i}" title="Einzeichnen">✏️</button>` : ''}<button data-fbweg="${i}" class="danger" title="Entfernen">✕</button></div>`).join('')}</div>
+    <div id="fbFortschritt" class="progress hidden"><div></div></div>
+    <div class="row"><button id="fbZu">Schließen</button><span class="grow"></span><button id="fbSenden" class="primary">Senden</button></div>`, (b) => {
+    const t = b.querySelector('#fbText'); t.oninput = () => { f.text = t.value; };
+    b.querySelector('#fbRec').onclick = () => fbAufnahme();
+    b.querySelector('#fbBild').onclick = () => (f.anhaenge.length >= FB_ANZ ? toast(`Höchstens ${FB_ANZ} Anhänge`) : b.querySelector('#fbBildIn').click());
+    b.querySelector('#fbVideo').onclick = () => (f.anhaenge.length >= FB_ANZ ? toast(`Höchstens ${FB_ANZ} Anhänge`) : b.querySelector('#fbVideoIn').click());
+    b.querySelector('#fbBildIn').onchange = (e) => fbDateien([...e.target.files], 'bild');
+    b.querySelector('#fbVideoIn').onchange = (e) => fbDateien([...e.target.files], 'video');
+    b.querySelectorAll('[data-fbweg]').forEach((x) => { x.onclick = () => { const a = f.anhaenge.splice(+x.dataset.fbweg, 1)[0]; if (a) URL.revokeObjectURL(a.url); fbFenster(); }; });
+    b.querySelectorAll('[data-fbmal]').forEach((x) => { x.onclick = () => fbMalen(f.anhaenge[+x.dataset.fbmal], []); });
+    b.querySelector('#fbZu').onclick = () => { if (f.text.trim() || f.anhaenge.length) toast('Entwurf bleibt, bis du ihn sendest', 2000); closeModal(); };
+    b.querySelector('#fbSenden').onclick = () => fbSenden();
+  });
+}
+function fbDateien(files, art) {
+  const f = fbEntwurf(), neu = [];
+  for (const d of files) {
+    if (f.anhaenge.length + neu.length >= FB_ANZ) { toast(`Höchstens ${FB_ANZ} Anhänge`); break; }
+    if (art === 'video' && d.size > FB_MAX) { toast(`Video zu groß (${mbGb(d.size)}, höchstens ${mbGb(FB_MAX)}) – bitte kürzer aufnehmen`, 4500); continue; }
+    if (art === 'bild' && d.size > 60e6) { toast('Bild zu groß'); continue; }
+    neu.push({ n: uid(), art, mime: d.type || (art === 'video' ? 'video/mp4' : 'image/jpeg'), name: d.name || '', blob: d, url: URL.createObjectURL(d) });
+  }
+  if (!neu.length) { fbFenster(); return; }
+  f.anhaenge.push(...neu);
+  log('feedback-anhang', { art, n: neu.length });
+  if (art === 'video') neu.forEach((a) => { const v = document.createElement('video'); v.preload = 'metadata'; v.onloadedmetadata = () => { a.dauer = v.duration; }; v.src = a.url; });
+  if (art === 'bild') fbMalen(neu[0], neu.slice(1)); else fbFenster();
+}
+// Zeichnen auf dem Bild (Robert: „vor dem Hochladen was einzeichnen“) – Striche bleiben am Anhang, nochmal ✏️ = weiter bemalen
+function fbMalen(a, rest) {
+  if (!a) { fbFenster(); return; }
+  if (!a.orig) a.orig = a.blob;
+  const img = new Image(), ou = URL.createObjectURL(a.orig);
+  img.onerror = () => { URL.revokeObjectURL(ou); toast('Bild ließ sich nicht öffnen'); fbFenster(); };
+  img.onload = () => {
+    const sk = Math.min(1, 2400 / Math.max(img.naturalWidth, img.naturalHeight));
+    const W = Math.round(img.naturalWidth * sk), H = Math.round(img.naturalHeight * sk);
+    const striche = a.striche || [];
+    let farbe = a.farbe || '#ff453a', dicke = a.dicke || 0.008, zug = null;
+    modal(`<h2>✏️ Einzeichnen</h2><p class="hint">Mit dem Finger markieren, was du meinst – z. B. einkreisen oder Pfeil.${rest.length ? ` Danach noch ${rest.length} Bild${rest.length > 1 ? 'er' : ''}.` : ''}</p>
+      <div class="fb-mal"><canvas id="fbC" width="${W}" height="${H}"></canvas></div>
+      <div class="fb-werkzeug">${['#ff453a', '#ffd60a', '#30d158', '#ffffff'].map((c) => `<button data-farbe="${c}" class="fb-farbe${c === farbe ? ' an' : ''}" style="background:${c}" aria-label="Farbe"></button>`).join('')}
+        <span class="grow"></span><button id="fbZurueck" title="Rückgängig">↶</button></div>
+      <div class="fb-werkzeug fb-staerke">
+        <button data-dicke="0.004" class="fb-dicke${dicke < 0.006 ? ' an' : ''}">dünn</button><button data-dicke="0.008" class="fb-dicke${dicke >= 0.006 && dicke < 0.012 ? ' an' : ''}">mittel</button><button data-dicke="0.016" class="fb-dicke${dicke >= 0.012 ? ' an' : ''}">dick</button></div>
+      <div class="row"><button id="fbOhne">${striche.length ? 'Alles weg' : 'Ohne Zeichnung'}</button><span class="grow"></span><button id="fbFertig" class="primary">Fertig</button></div>`, (b) => {
+      const c = b.querySelector('#fbC'), g = c.getContext('2d');
+      const zeichne = (s) => { g.strokeStyle = s.farbe; g.lineWidth = s.dicke * Math.max(W, H); g.lineCap = g.lineJoin = 'round';
+        g.beginPath(); s.p.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y))); if (s.p.length === 1) g.lineTo(s.p[0][0] + 0.1, s.p[0][1]); g.stroke(); };
+      const alles = () => { g.drawImage(img, 0, 0, W, H); striche.forEach(zeichne); };
+      alles();
+      const pt = (e) => { const r = c.getBoundingClientRect(); return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height]; };
+      c.onpointerdown = (e) => { e.preventDefault(); try { c.setPointerCapture(e.pointerId); } catch { /* egal */ } zug = { farbe, dicke, p: [pt(e)] }; striche.push(zug); zeichne(zug); };
+      c.onpointermove = (e) => { if (!zug) return; const p = pt(e), q = zug.p[zug.p.length - 1]; zug.p.push(p);
+        g.strokeStyle = zug.farbe; g.lineWidth = zug.dicke * Math.max(W, H); g.lineCap = 'round'; g.beginPath(); g.moveTo(q[0], q[1]); g.lineTo(p[0], p[1]); g.stroke(); };
+      c.onpointerup = c.onpointercancel = () => { zug = null; };
+      b.querySelectorAll('[data-farbe]').forEach((x) => { x.onclick = () => { farbe = a.farbe = x.dataset.farbe; b.querySelectorAll('[data-farbe]').forEach((y) => y.classList.toggle('an', y === x)); }; });
+      b.querySelectorAll('[data-dicke]').forEach((x) => { x.onclick = () => { dicke = a.dicke = +x.dataset.dicke; b.querySelectorAll('[data-dicke]').forEach((y) => y.classList.toggle('an', y === x)); }; });
+      b.querySelector('#fbZurueck').onclick = () => { striche.pop(); alles(); };
+      const weiter = () => { URL.revokeObjectURL(ou); rest.length ? fbMalen(rest[0], rest.slice(1)) : fbFenster(); };
+      b.querySelector('#fbOhne').onclick = () => { striche.length = 0; a.striche = []; a.bemalt = false; alles(); fbBildFertig(a, c, weiter); };
+      b.querySelector('#fbFertig').onclick = () => { a.striche = striche; a.bemalt = striche.length > 0; fbBildFertig(a, c, weiter); };
+    });
+  };
+  img.src = ou;
+}
+function fbBildFertig(a, c, weiter) {   // als JPEG (auch HEIC/PNG vereinheitlicht, max. 2400 px)
+  c.toBlob((bl) => {
+    if (bl) { URL.revokeObjectURL(a.url); a.blob = bl; a.mime = 'image/jpeg'; a.url = URL.createObjectURL(bl); }
+    log('feedback-bild', { bemalt: !!a.bemalt, kb: Math.round(a.blob.size / 1024) });
+    weiter();
+  }, 'image/jpeg', 0.88);
+}
+async function fbAufnahme() {
+  if (fbRec) { fbRec.stop(); return; }
+  if (rec || recStarting || pnRec) { toast('Erst die andere Sprachnotiz beenden'); return; }
+  if (fbEntwurf().anhaenge.length >= FB_ANZ) { toast(`Höchstens ${FB_ANZ} Anhänge`); return; }
+  stopPlay();
+  const mime = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm'].find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m));
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch (e) { log('mikro-fehler', { name: e.name, wo: 'feedback' }); toast('Kein Mikrofonzugriff – in den Einstellungen erlauben'); return; }
+  let r;
+  try { r = new MediaRecorder(stream, { ...(mime ? { mimeType: mime } : {}), audioBitsPerSecond: 64000 }); }
+  catch (e) { stream.getTracks().forEach((x) => x.stop()); toast('Aufnahme nicht möglich'); return; }
+  const chunks = [], t0 = Date.now();
+  r.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  r.onstop = () => {
+    stream.getTracks().forEach((x) => x.stop());
+    fbRec = null;
+    const blob = new Blob(chunks, { type: r.mimeType || mime || 'audio/mp4' });
+    if (blob.size) fbEntwurf().anhaenge.push({ n: uid(), art: 'audio', mime: blob.type, name: '', blob, url: URL.createObjectURL(blob), dauer: (Date.now() - t0) / 1000 });
+    log('feedback-sprachnachricht', { s: ((Date.now() - t0) / 1000).toFixed(1) });
+    if ($('fbText')) fbFenster(); else toast('🎙 Sprachnachricht im Feedback-Entwurf ✓', 2200);
+  };
+  fbRec = r; r.start(); log('feedback-aufnahme-start', {});
+  const k = $('fbRec'); if (k) { k.classList.add('rec'); k.textContent = '■ Aufnahme beenden'; }
+}
+async function fbSenden() {
+  const f = fbEntwurf();
+  if (fbRec) { toast('Erst die Aufnahme beenden'); return; }
+  if (!f.text.trim() && !f.anhaenge.length) { toast('Schreib etwas oder häng etwas an'); return; }
+  const link = await fbLinkWaehlen();
+  if (!link) {
+    modal(`<h2>💡 Feedback</h2><p>Zum Senden braucht Framepoint auf diesem Gerät einen Blue-Tacit-Link (den du von Blue Tacit bekommen hast).
+      Öffne ihn einmal, dann klappt es. Dein Entwurf bleibt so lange erhalten.</p><div class="row"><button id="fbZurueck2" class="primary">Zurück zum Entwurf</button></div>`,
+    (b) => { b.querySelector('#fbZurueck2').onclick = fbFenster; });
+    return;
+  }
+  const btn = $('fbSenden'), fp = $('fbFortschritt');
+  btn.disabled = true; btn.textContent = 'Wird gesendet …'; fp.classList.remove('hidden');
+  const gesamt = f.anhaenge.reduce((s, a) => s + a.blob.size, 0);
+  const q = (o) => Object.entries(o).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
+  const teileVon = (a) => Math.max(1, Math.ceil(a.blob.size / FB_TEIL));
+  let fertig = 0;
+  try {
+    for (const a of f.anhaenge) {
+      const teile = teileVon(a);
+      for (let i = 1; i <= teile; i++) {
+        const stueck = a.blob.slice((i - 1) * FB_TEIL, i * FB_TEIL, a.mime);
+        const r = await fetch(`${link.url}/v1/feedback/anhang?${q({ k: link.key, f: f.id, n: a.n, teil: i, teile })}`,
+          { method: 'POST', headers: { 'content-type': a.mime || 'application/octet-stream' }, body: stueck });
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).fehler || 'HTTP ' + r.status);
+        fertig += stueck.size; fp.firstElementChild.style.width = Math.round(fertig / (gesamt || 1) * 95) + '%';
+      }
+    }
+    const body = { text: f.text, anhaenge: f.anhaenge.map((a) => ({ n: a.n, art: a.art, mime: a.mime, name: a.name, bytes: a.blob.size, teile: teileVon(a), dauer: a.dauer, bemalt: !!a.bemalt })),
+      app: APP_VERSION, geraet: navigator.userAgent.slice(0, 200), projekt: S.proj ? S.proj.meta.name : '',
+      ansicht: $('editor').classList.contains('hidden') ? 'Startseite' : 'Projekt', bildschirm: `${innerWidth}×${innerHeight}` };
+    const r = await fetch(`${link.url}/v1/feedback?${q({ k: link.key, f: f.id })}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.ok) throw new Error(j.fehler || 'HTTP ' + r.status);
+    log('feedback-gesendet', { anhaenge: body.anhaenge.length, bytes: gesamt });
+    f.anhaenge.forEach((a) => URL.revokeObjectURL(a.url)); FB = null;
+    modal(`<h2>💡 Danke!</h2><p>Dein Feedback ist bei Blue Tacit angekommen${gesamt ? ` (${mbGb(gesamt)})` : ''}. Wir schauen es uns an und verbessern Framepoint damit.</p>
+      <div class="row"><button class="primary" onclick="closeModal()">OK</button></div>`);
+  } catch (e) {
+    const m = String((e && e.message) || e);
+    log('feedback-fehler', { msg: m });
+    if (!$('fbSenden')) return;
+    btn.disabled = false; btn.textContent = 'Nochmal senden'; fp.classList.add('hidden');
+    toast(m === 'Tageslimit erreicht' ? 'Heute schon sehr viel gesendet – bitte morgen nochmal' : m === 'Link ungültig oder gesperrt' ? 'Dein Link ist gesperrt – bitte Robert Bescheid geben'
+      : 'Senden ging nicht – Internet prüfen und nochmal tippen. Dein Entwurf bleibt.', 4500);
+  }
 }
 
 /* ---------- Bedienung ---------- */
