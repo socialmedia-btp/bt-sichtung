@@ -2651,7 +2651,7 @@ function muFenster() {
           <input type="range" class="mu-pos" min="0" max="1000" value="0" step="1" data-s="${esc(s.id)}" aria-label="Position">
           <span class="mu-zeit" data-s="${esc(s.id)}">0:00</span>
           <button type="button" class="mu-rec" data-s="${esc(s.id)}" title="Sprachnotiz zu diesem Song">🎙</button>
-          <button type="button" class="mu-cut${muCutsVon(s.id).length ? ' hat' : ''}" data-s="${esc(s.id)}" title="Cuts auf diesen Song setzen">${muCutKnopf(s.id)}</button></div>
+          <button type="button" class="mu-cut${muCutHat(s.id) ? ' hat' : ''}" data-s="${esc(s.id)}" title="Cuts auf diesen Song setzen">${muCutKnopf(s.id)}</button></div>
         <div class="mu-notizen" data-s="${esc(s.id)}">${muNotizHtml(s.id)}</div></div>`).join('')}
       <label class="mu-song mu-eigen${w[r.id] === 'eigener' ? ' on' : ''}"><input type="radio" name="mu-${esc(r.id)}" value="eigener" ${w[r.id] === 'eigener' ? 'checked' : ''}>
         <div class="t">Ich habe schon einen eigenen Song (in der Projektnotiz gesagt)</div></label>`).join('')}</div>
@@ -2707,7 +2707,7 @@ function muFenster() {
       if (muRec) { toast('Erst die Notiz beenden'); return; }
       muStop();
       muCutOeffnen(x.dataset.s, () => {   // nach „Fertig“: Knopf aktualisieren, Song mit Cuts gilt als gewählt
-        const n = muCutsVon(x.dataset.s).length;
+        const n = muCutHat(x.dataset.s);
         x.innerHTML = muCutKnopf(x.dataset.s); x.classList.toggle('hat', !!n);
         const r = b.querySelector(`input[type=radio][value="${CSS.escape(x.dataset.s)}"]`);
         if (n && r && !r.checked) { r.checked = true; r.onchange(); }
@@ -2739,8 +2739,9 @@ function muFenster() {
       if (!Object.keys(wahl).length && !alle.length && !text) { toast('Wähl einen Song oder nimm eine Notiz auf'); return; }
       const cuts = {};   // v5.5: gesetzte Cuts nur für die gewählten Songs (Sekunden in der Hörprobe + deren Start im Song)
       for (const sid of Object.values(wahl)) {
-        const t = muCutsVon(sid); if (!t.length) continue;
-        const so = muSong(sid); cuts[sid] = { t: t.map((x) => Math.round(x * 1000) / 1000), ab: so && Number.isFinite(so.probe_ab) ? so.probe_ab : null };
+        const t = muCutsVon(sid), be = muBereichVon(sid) || {}; if (!t.length && be.von == null && be.bis == null) continue;
+        const so = muSong(sid), r3 = (x) => (x == null ? null : Math.round(x * 1000) / 1000);
+        cuts[sid] = { t: t.map(r3), ab: so && Number.isFinite(so.probe_ab) ? so.probe_ab : null, von: r3(be.von), bis: r3(be.bis) };
       }
       const fehlt = m.reels.filter((r) => !wahl[r.id]).map((r) => r.name || r.id);
       if (Object.keys(wahl).length && fehlt.length && !confirm(`Für ${fehlt.join(', ')} ist noch nichts gewählt. Trotzdem senden?`)) return;
@@ -2771,7 +2772,19 @@ function muCutsSetzen(sid, liste) {
   if (liste.length) r[sid] = liste; else delete r[sid];
   save(); markSaved(false);
 }
-const muCutKnopf = (sid) => { const n = muCutsVon(sid).length; return n ? `✂ ${n} Cut${n > 1 ? 's' : ''}` : '✂ Schnitt'; };
+// v5.6 (Robert 15.11.): Anfang und Ende der Auswahl im Song – {von, bis} in Sekunden der Hörprobe (null = Anfang/Ende der Hörprobe)
+function muBereichVon(sid) { return (((S.ps.musikBereich || {})[muDaten.erstellt]) || {})[sid] || null; }
+function muBereichSetzen(sid, b) {
+  S.ps.musikBereich = S.ps.musikBereich || {};
+  const r = S.ps.musikBereich[muDaten.erstellt] = S.ps.musikBereich[muDaten.erstellt] || {};
+  if (b && (b.von != null || b.bis != null)) r[sid] = b; else delete r[sid];
+  save(); markSaved(false);
+}
+const muCutHat = (sid) => muCutsVon(sid).length > 0 || !!muBereichVon(sid);
+const muCutKnopf = (sid) => {
+  const n = muCutsVon(sid).length, b = muBereichVon(sid);
+  return n || b ? `✂ ${n ? `${n} Cut${n > 1 ? 's' : ''}` : ''}${n && b ? ' · ' : ''}${b ? '[ ]' : ''}` : '✂ Schnitt';
+};
 const muSong = (sid) => (muDaten && muDaten.reels || []).flatMap((r) => r.songs || []).find((s) => s.id === sid) || null;
 async function muProbeUrl(sid) {
   let url = muProben.get(sid); if (url) return url;
@@ -2813,7 +2826,9 @@ async function muCutOeffnen(sid, fertig) {
   $('muCutTitel').textContent = `✂ ${so.titel || ''} – ${so.kuenstler || ''}`;
   $('muCutInfo').textContent = 'Hörprobe wird geladen …';
   $('muCut').classList.remove('hidden');
-  MC = { sid, song: so, audio: null, w: null, cuts: muCutsVon(sid).slice().sort((a, b) => a - b), sel: -1, zoom: 1, off: 0, fertig, g: null };
+  const be = muBereichVon(sid) || {};
+  MC = { sid, song: so, audio: null, w: null, cuts: muCutsVon(sid).slice().sort((a, b) => a - b), sel: -1, zoom: 1, off: 0, fertig, g: null,
+    von: be.von ?? null, bis: be.bis ?? null };
   log('song-schnitt', { s: sid, cuts: MC.cuts.length });
   try {
     const url = await muProbeUrl(sid);
@@ -2828,6 +2843,7 @@ function muCutZu() {
   if (!MC) return;
   if (MC.audio) MC.audio.pause();
   muCutsSetzen(MC.sid, MC.cuts);
+  muBereichSetzen(MC.sid, { von: MC.von, bis: MC.bis });
   log('song-schnitt-fertig', { s: MC.sid, cuts: MC.cuts.length });
   const f = MC.fertig; MC = null;
   $('muCut').classList.add('hidden');
@@ -2847,12 +2863,16 @@ function mcGroesse() {
 }
 function mcInfo() {
   if (!MC || !MC.w) return;
-  const c = MC.cuts, n = c.length;
-  const laengen = [0, ...c, MC.w.dur].map((x, i, a) => (i ? x - a[i - 1] : null)).filter((x) => x != null);
+  const g = mcGrenzen(), c = g.slice(1, -1), n = c.length, aus = MC.cuts.length - n;
+  const laengen = g.map((x, i, a) => (i ? x - a[i - 1] : null)).filter((x) => x != null);
   const ab = Number.isFinite(MC.song.probe_ab) ? ` · Hörprobe = ${muZeit(MC.song.probe_ab)}–${muZeit(MC.song.probe_ab + MC.w.dur)} im Song` : ' · Zeiten in der Hörprobe';
-  $('muCutInfo').textContent = n ? `${n} Cut${n > 1 ? 's' : ''} → ${n + 1} Szenen · Ø ${BTV.fmtS(laengen.reduce((a, b) => a + b, 0) / laengen.length)} s${ab}`
-    : `Noch keine Cuts${ab}`;
+  const be = MC.von != null || MC.bis != null ? ` · Auswahl ${muZeit(mcSongZeit(g[0]))}–${muZeit(mcSongZeit(g[g.length - 1]))} (${BTV.fmtS(g[g.length - 1] - g[0])} s)` : '';
+  $('muCutInfo').textContent = (n ? `${n} Cut${n > 1 ? 's' : ''} → ${n + 1} Szenen · Ø ${BTV.fmtS(laengen.reduce((a, b) => a + b, 0) / laengen.length)} s`
+    : 'Noch keine Cuts') + be + (aus > 0 ? ` · ${aus} Cut${aus > 1 ? 's' : ''} außerhalb (zählt nicht)` : '') + ab;
 }
+// Grenzen der Szenen: Anfang der Auswahl, Cuts darin, Ende der Auswahl
+const mcVon = () => (MC.von != null ? MC.von : 0), mcBis = () => (MC.bis != null ? MC.bis : MC.w.dur);
+function mcGrenzen() { const a = mcVon(), b = mcBis(); return [a, ...MC.cuts.filter((t) => t > a + 0.02 && t < b - 0.02), b]; }
 function mcZeichnen() {
   if (!MC || !MC.w) return;
   const d = devicePixelRatio || 1, W = mcCv.width / d, H = mcCv.height / d, c = mcCtx, w = MC.w;
@@ -2884,7 +2904,20 @@ function mcZeichnen() {
   // Cuts und Szenenlängen
   const cuts = MC.cuts;
   c.font = '600 12px -apple-system, Segoe UI, sans-serif';
-  [0, ...cuts, w.dur].forEach((t, i, a) => {
+  // außerhalb der Auswahl abdunkeln, Griffe „[“ und „]“
+  { const xa = mcXOf(mcVon()), xb = mcXOf(mcBis());
+    c.fillStyle = 'rgba(0,0,0,0.62)';
+    if (xa > 0) c.fillRect(0, top - 2, xa, hh + 4);
+    if (xb < W) c.fillRect(xb, top - 2, W - xb, hh + 4);
+    c.font = '700 11px -apple-system, Segoe UI, sans-serif';
+    for (const [x, ist, text, links] of [[xa, MC.von != null, 'ANFANG', true], [xb, MC.bis != null, 'ENDE', false]]) {
+      if (!ist || x < -20 || x > W + 20) continue;
+      c.fillStyle = '#5ed6ff'; c.fillRect(x - 1.5, top - 2, 3, hh + 4);
+      c.fillRect(links ? x : x - 10, top - 2, 10, 3); c.fillRect(links ? x : x - 10, top + hh - 1, 10, 3);
+      c.fillText(text, links ? x + 5 : x - 5 - c.measureText(text).width, top + hh - 8);
+    }
+  }
+  mcGrenzen().forEach((t, i, a) => {
     if (!i) return;
     const a0 = a[i - 1], x0 = mcXOf(a0), x1 = mcXOf(t);
     if (x1 - x0 > 34 && x1 > 0 && x0 < W) { c.fillStyle = '#c9ccd2'; c.fillText(BTV.fmtS(t - a0) + ' s', Math.max(x0, 0) + 5, H - 8 - OV); }
@@ -2900,6 +2933,7 @@ function mcZeichnen() {
     const y0 = H - OV + 4, k = W / w.dur;
     c.fillStyle = '#23262b'; c.fillRect(0, y0, W, OV - 6);
     c.fillStyle = '#f2c14e'; for (const t of cuts) c.fillRect(t * k, y0, 1, OV - 6);
+    c.fillStyle = '#5ed6ff'; if (MC.von != null) c.fillRect(MC.von * k - 1, y0, 2, OV - 6); if (MC.bis != null) c.fillRect(MC.bis * k - 1, y0, 2, OV - 6);
     c.strokeStyle = '#e8e8ec'; c.lineWidth = 2; c.strokeRect(MC.off * k + 1, y0, (w.dur / MC.zoom) * k - 2, OV - 6);
     c.fillStyle = '#e5484d'; c.fillRect(mcT() * k - 1, y0, 2, OV - 6);
   }
@@ -2943,6 +2977,16 @@ function mcSpulen(t) {
   mcZeichnen();
 }
 $('muCutAnfang').onclick = () => mcSpulen(0);
+function mcBereichSetzen(art) {
+  if (!MC || !MC.w) return;
+  let t = MC.audio && !MC.audio.paused ? mcEinrasten(mcT()) : mcT();
+  t = clamp(t, 0, MC.w.dur);
+  if (art === 'von') { if (MC.bis != null && t >= MC.bis - 0.2) { toast('Anfang muss vor dem Ende liegen'); return; } MC.von = t < 0.05 ? null : t; }
+  else { if (t <= mcVon() + 0.2) { toast('Ende muss nach dem Anfang liegen'); return; } MC.bis = t > MC.w.dur - 0.05 ? null : t; }
+  log('song-bereich', { art, t: +t.toFixed(2) }); mcInfo(); mcZeichnen();
+}
+$('muCutVon').onclick = () => mcBereichSetzen('von');
+$('muCutBis').onclick = () => mcBereichSetzen('bis');
 $('muCutZurueck').onclick = () => mcSpulen(mcT() - 5);
 $('muCutSetzen').onclick = () => { if (MC && MC.w) mcCutSetzen(MC.audio && !MC.audio.paused ? mcEinrasten(mcT()) : mcT()); };
 $('muCutPlay').onclick = () => {
@@ -2954,7 +2998,10 @@ const mcSchieben = (dt) => { if (!MC || MC.sel < 0) return; const t = clamp(MC.c
 $('muCutLinks').onclick = () => mcSchieben(-1 / MC_FPS);
 $('muCutRechts').onclick = () => mcSchieben(1 / MC_FPS);
 $('muCutWeg').onclick = () => { if (!MC || MC.sel < 0) return; MC.cuts.splice(MC.sel, 1); MC.sel = -1; mcInfo(); mcZeichnen(); };
-$('muCutLeeren').onclick = () => { if (!MC || !MC.cuts.length || !confirm('Alle Cuts dieses Songs löschen?')) return; MC.cuts = []; MC.sel = -1; mcInfo(); mcZeichnen(); };
+$('muCutLeeren').onclick = () => {
+  if (!MC || (!MC.cuts.length && MC.von == null && MC.bis == null) || !confirm('Alle Cuts und Anfang/Ende dieses Songs löschen?')) return;
+  MC.cuts = []; MC.von = MC.bis = null; MC.sel = -1; mcInfo(); mcZeichnen();
+};
 $('muCutZoom').onclick = () => {
   if (!MC || !MC.w) return;
   const t = mcT(), z = MC.zoom >= 8 ? 1 : MC.zoom * 2;
@@ -2969,6 +3016,8 @@ mcCv.addEventListener('pointerdown', (e) => {
   if (MC.zoom > 1 && y > r.height - 22) {   // Übersichtsbalken: Ausschnitt dorthin
     MC.g = { art: 'blaettern' }; MC.off = (x / r.width) * MC.w.dur - MC.w.dur / MC.zoom / 2; mcOffKlemmen(); mcZeichnen(); return;
   }
+  const griff = MC.von != null && Math.abs(mcXOf(MC.von) - x) < 16 ? 'von' : MC.bis != null && Math.abs(mcXOf(MC.bis) - x) < 16 ? 'bis' : null;
+  if (griff) { MC.g = { art: griff, x0: e.clientX, moved: false }; return; }
   const i = MC.cuts.findIndex((t) => Math.abs(mcXOf(t) - x) < 16);
   MC.g = { art: i >= 0 ? 'cut' : 'kopf', x0: e.clientX, cut: i, moved: false };
   if (i >= 0) { MC.sel = i; mcZeichnen(); return; }
@@ -2980,6 +3029,8 @@ mcCv.addEventListener('pointermove', (e) => {
   if (g.art === 'blaettern') { MC.off = (x / r.width) * MC.w.dur - MC.w.dur / MC.zoom / 2; mcOffKlemmen(); mcZeichnen(); return; }
   if (Math.abs(e.clientX - g.x0) > 6) g.moved = true;
   if (!g.moved) return;
+  if (g.art === 'von') { MC.von = clamp(mcTOf(x), 0, (MC.bis ?? MC.w.dur) - 0.2); mcInfo(); mcZeichnen(); return; }
+  if (g.art === 'bis') { MC.bis = clamp(mcTOf(x), mcVon() + 0.2, MC.w.dur); mcInfo(); mcZeichnen(); return; }
   if (g.art === 'cut') {   // Cut ziehen
     MC.cuts[MC.sel] = clamp(mcTOf(x), 0.05, MC.w.dur - 0.05); mcZeichnen();
   } else mcSpulen(mcTOf(clamp(x, 0, r.width)));   // Abspielkopf ziehen – am Rand blättert die Ansicht mit
