@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v5.4';
+const APP_VERSION = 'v5.5';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -2650,7 +2650,8 @@ function muFenster() {
         <div class="mu-player"><button type="button" class="play" data-s="${esc(s.id)}">▶</button>
           <input type="range" class="mu-pos" min="0" max="1000" value="0" step="1" data-s="${esc(s.id)}" aria-label="Position">
           <span class="mu-zeit" data-s="${esc(s.id)}">0:00</span>
-          <button type="button" class="mu-rec" data-s="${esc(s.id)}" title="Sprachnotiz zu diesem Song">🎙</button></div>
+          <button type="button" class="mu-rec" data-s="${esc(s.id)}" title="Sprachnotiz zu diesem Song">🎙</button>
+          <button type="button" class="mu-cut${muCutsVon(s.id).length ? ' hat' : ''}" data-s="${esc(s.id)}" title="Cuts auf diesen Song setzen">${muCutKnopf(s.id)}</button></div>
         <div class="mu-notizen" data-s="${esc(s.id)}">${muNotizHtml(s.id)}</div></div>`).join('')}
       <label class="mu-song mu-eigen${w[r.id] === 'eigener' ? ' on' : ''}"><input type="radio" name="mu-${esc(r.id)}" value="eigener" ${w[r.id] === 'eigener' ? 'checked' : ''}>
         <div class="t">Ich habe schon einen eigenen Song (in der Projektnotiz gesagt)</div></label>`).join('')}</div>
@@ -2702,6 +2703,16 @@ function muFenster() {
       });
     });
     b.querySelectorAll('.mu-rec').forEach((x) => x.onclick = () => muAufnahme(x.dataset.s, x, el('.mu-notizen', x.dataset.s)));
+    b.querySelectorAll('.mu-cut').forEach((x) => x.onclick = () => {
+      if (muRec) { toast('Erst die Notiz beenden'); return; }
+      muStop();
+      muCutOeffnen(x.dataset.s, () => {   // nach „Fertig“: Knopf aktualisieren, Song mit Cuts gilt als gewählt
+        const n = muCutsVon(x.dataset.s).length;
+        x.innerHTML = muCutKnopf(x.dataset.s); x.classList.toggle('hat', !!n);
+        const r = b.querySelector(`input[type=radio][value="${CSS.escape(x.dataset.s)}"]`);
+        if (n && r && !r.checked) { r.checked = true; r.onchange(); }
+      });
+    });
     b.addEventListener('click', (e) => {
       const np = e.target.closest('[data-np]'), nd = e.target.closest('[data-nd]');
       if (np) { const [sid, i] = np.dataset.np.split('|'); playNote(muNotizenVon(sid)[+i]); }
@@ -2726,6 +2737,11 @@ function muFenster() {
       }
       const text = b.querySelector('#muNotiz').value.trim();
       if (!Object.keys(wahl).length && !alle.length && !text) { toast('Wähl einen Song oder nimm eine Notiz auf'); return; }
+      const cuts = {};   // v5.5: gesetzte Cuts nur für die gewählten Songs (Sekunden in der Hörprobe + deren Start im Song)
+      for (const sid of Object.values(wahl)) {
+        const t = muCutsVon(sid); if (!t.length) continue;
+        const so = muSong(sid); cuts[sid] = { t: t.map((x) => Math.round(x * 1000) / 1000), ab: so && Number.isFinite(so.probe_ab) ? so.probe_ab : null };
+      }
       const fehlt = m.reels.filter((r) => !wahl[r.id]).map((r) => r.name || r.id);
       if (Object.keys(wahl).length && fehlt.length && !confirm(`Für ${fehlt.join(', ')} ist noch nichts gewählt. Trotzdem senden?`)) return;
       const knopf = b.querySelector('#muSenden'); knopf.disabled = true; knopf.textContent = 'Senden …';
@@ -2734,15 +2750,228 @@ function muFenster() {
           const res = await bkNotizenHoch(m.link, alle, true);
           if (res !== 'ok') { toast(res === 'netz' ? 'Kein Internet – bitte später nochmal senden' : res, 4500); knopf.disabled = false; knopf.textContent = 'Senden'; return; }
         }
-        const r = await fetch(`${m.link.url}/v1/musik/wahl?k=${encodeURIComponent(m.link.key)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ wahl, notiz: text, notizen }) });
+        const r = await fetch(`${m.link.url}/v1/musik/wahl?k=${encodeURIComponent(m.link.key)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ wahl, notiz: text, notizen, cuts }) });
         const j = await r.json().catch(() => ({}));
         if (!r.ok || !j.ok) { toast('Nicht gesendet: ' + (j.fehler || r.status), 4000); knopf.disabled = false; knopf.textContent = 'Senden'; return; }
-        log('musik-wahl', { n: Object.keys(wahl).length, notizen: alle.length });
+        log('musik-wahl', { n: Object.keys(wahl).length, notizen: alle.length, cuts: Object.values(cuts).reduce((n, c) => n + c.t.length, 0) });
         muStop(); closeModal(); toast('Danke! Deine Rückmeldung zur Musik ist bei Blue Tacit ✓', 3000); muPruefen(false);
       } catch { toast('Kein Internet – bitte später nochmal senden', 4000); knopf.disabled = false; knopf.textContent = 'Senden'; }
     };
   });
 }
+/* ---------- Song-Schnitt (Robert 15.11., v5.5) ----------
+ * In der Musikauswahl je Song „✂ Schnitt“: Wellenform der Hörprobe (Bass hell, je Ausschnitt verstärkt wie die Musikspur), abspielen und im
+ * Takt „✂ Cut“ tippen (rastet auf den nächsten Schlag ein) oder in die Wellenform tippen und setzen. Cuts antippen = wählen, ziehen = verschieben.
+ * Gespeichert je Vorschlagsrunde in S.ps.musikCuts[erstellt][song_id] (Sekunden in der Hörprobe); „Senden“ schickt sie für die gewählten Songs mit
+ * ({t, ab}: ab = Start der Hörprobe im Song, wenn bekannt) – der Rough Cut wird dann auf genau diese Stellen geschnitten. */
+function muCutsVon(sid) { return (((S.ps.musikCuts || {})[muDaten.erstellt]) || {})[sid] || []; }
+function muCutsSetzen(sid, liste) {
+  S.ps.musikCuts = S.ps.musikCuts || {};
+  const r = S.ps.musikCuts[muDaten.erstellt] = S.ps.musikCuts[muDaten.erstellt] || {};
+  if (liste.length) r[sid] = liste; else delete r[sid];
+  save(); markSaved(false);
+}
+const muCutKnopf = (sid) => { const n = muCutsVon(sid).length; return n ? `✂ ${n} Cut${n > 1 ? 's' : ''}` : '✂ Schnitt'; };
+const muSong = (sid) => (muDaten && muDaten.reels || []).flatMap((r) => r.songs || []).find((s) => s.id === sid) || null;
+async function muProbeUrl(sid) {
+  let url = muProben.get(sid); if (url) return url;
+  const r = await fetch(`${muDaten.link.url}/v1/musik/probe?k=${encodeURIComponent(muDaten.link.key)}&s=${encodeURIComponent(sid)}`);
+  if (!r.ok) throw new Error(r.status);
+  url = URL.createObjectURL(await r.blob()); muProben.set(sid, url); return url;
+}
+const MC_HZ = 50, MC_FPS = 25;
+const MCW = new Map();   // song_id → {dur, voll, bass} (Spitzen je 20 ms, 0–1)
+async function muCutWellen(sid, url) {
+  if (MCW.has(sid)) return MCW.get(sid);
+  const AC = window.AudioContext || window.webkitAudioContext, OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  const ac = new AC();
+  const buf = await new Promise((ok, nein) => { fetch(url).then((r) => r.arrayBuffer()).then((ab) => { const p = ac.decodeAudioData(ab, ok, nein); if (p && p.then) p.then(ok, nein); }).catch(nein); });
+  try { ac.close(); } catch { /* egal */ }
+  const spitzen = (b) => {
+    const n = Math.ceil(b.duration * MC_HZ), step = b.sampleRate / MC_HZ, out = new Float32Array(n), ch = [];
+    for (let c = 0; c < b.numberOfChannels; c++) ch.push(b.getChannelData(c));
+    for (let i = 0; i < n; i++) {
+      let m = 0; const a = Math.floor(i * step), e = Math.min(b.length, Math.floor((i + 1) * step));
+      for (const d of ch) for (let k = a; k < e; k++) { const v = d[k] < 0 ? -d[k] : d[k]; if (v > m) m = v; }
+      out[i] = m;
+    }
+    return out;
+  };
+  let bass = null;
+  try {
+    const oc = new OAC(1, buf.length, buf.sampleRate), src = oc.createBufferSource(), lp = oc.createBiquadFilter();
+    src.buffer = buf; lp.type = 'lowpass'; lp.frequency.value = 150; src.connect(lp); lp.connect(oc.destination); src.start();
+    bass = spitzen(await oc.startRendering());
+  } catch { bass = null; }
+  const w = { dur: buf.duration, voll: spitzen(buf), bass };
+  MCW.set(sid, w); return w;
+}
+let MC = null;   // {sid, song, audio, w, cuts, sel, zoom, off, fertig, g}
+const mcCv = $('muCutCv'), mcCtx = mcCv.getContext('2d');
+async function muCutOeffnen(sid, fertig) {
+  const so = muSong(sid); if (!so) return;
+  $('muCutTitel').textContent = `✂ ${so.titel || ''} – ${so.kuenstler || ''}`;
+  $('muCutInfo').textContent = 'Hörprobe wird geladen …';
+  $('muCut').classList.remove('hidden');
+  MC = { sid, song: so, audio: null, w: null, cuts: muCutsVon(sid).slice().sort((a, b) => a - b), sel: -1, zoom: 1, off: 0, fertig, g: null };
+  log('song-schnitt', { s: sid, cuts: MC.cuts.length });
+  try {
+    const url = await muProbeUrl(sid);
+    const w = await muCutWellen(sid, url);
+    if (!MC || MC.sid !== sid) return;
+    MC.w = w; MC.audio = new Audio(url); MC.audio.preload = 'auto';
+    MC.audio.onended = () => { $('muCutPlay').textContent = '▶'; mcZeichnen(); };
+  } catch (e) { $('muCutInfo').textContent = 'Hörprobe nicht ladbar – Internet?'; log('song-schnitt-fehler', { s: sid, e: String(e) }); return; }
+  mcGroesse(); mcInfo();
+}
+function muCutZu() {
+  if (!MC) return;
+  if (MC.audio) MC.audio.pause();
+  muCutsSetzen(MC.sid, MC.cuts);
+  log('song-schnitt-fertig', { s: MC.sid, cuts: MC.cuts.length });
+  const f = MC.fertig; MC = null;
+  $('muCut').classList.add('hidden');
+  if (f) f();
+}
+const mcT = () => (MC && MC.audio ? MC.audio.currentTime : 0);
+const mcSongZeit = (t) => (MC && Number.isFinite(MC.song.probe_ab) ? MC.song.probe_ab + t : t);
+function mcSichtbar() { const W = mcCv.clientWidth || 1; return MC.w.dur / MC.zoom * Math.min(1, W / Math.max(W, 1)); }
+function mcPps() { return (mcCv.clientWidth || 1) / (MC.w.dur / MC.zoom); }
+function mcXOf(t) { return (t - MC.off) * mcPps(); }
+function mcTOf(x) { return MC.off + x / mcPps(); }
+function mcOffKlemmen() { MC.off = clamp(MC.off, 0, Math.max(0, MC.w.dur - MC.w.dur / MC.zoom)); }
+function mcGroesse() {
+  const r = mcCv.getBoundingClientRect(), d = devicePixelRatio || 1;
+  mcCv.width = Math.round(r.width * d); mcCv.height = Math.round(r.height * d);
+  mcZeichnen();
+}
+function mcInfo() {
+  if (!MC || !MC.w) return;
+  const c = MC.cuts, n = c.length;
+  const laengen = [0, ...c, MC.w.dur].map((x, i, a) => (i ? x - a[i - 1] : null)).filter((x) => x != null);
+  const ab = Number.isFinite(MC.song.probe_ab) ? ` · Hörprobe = ${muZeit(MC.song.probe_ab)}–${muZeit(MC.song.probe_ab + MC.w.dur)} im Song` : ' · Zeiten in der Hörprobe';
+  $('muCutInfo').textContent = n ? `${n} Cut${n > 1 ? 's' : ''} → ${n + 1} Szenen · Ø ${BTV.fmtS(laengen.reduce((a, b) => a + b, 0) / laengen.length)} s${ab}`
+    : `Noch keine Cuts${ab}`;
+}
+function mcZeichnen() {
+  if (!MC || !MC.w) return;
+  const d = devicePixelRatio || 1, W = mcCv.width / d, H = mcCv.height / d, c = mcCtx, w = MC.w;
+  c.setTransform(d, 0, 0, d, 0, 0); c.clearRect(0, 0, W, H);
+  const RUL = 22, top = RUL + 4, hh = H - top - 26, mid = top + hh / 2;
+  // Zeitlineal (Song-Zeit)
+  c.fillStyle = '#8b9098'; c.font = '11px -apple-system, Segoe UI, sans-serif';
+  const pps = mcPps(), schritt = pps > 60 ? 1 : pps > 25 ? 2 : pps > 10 ? 5 : 10;
+  for (let t = Math.ceil(MC.off / schritt) * schritt; t <= MC.off + W / pps; t += schritt) {
+    const x = mcXOf(t); c.fillRect(x, RUL - 6, 1, 6); c.fillText(muZeit(mcSongZeit(t)), x + 3, 13);
+  }
+  // Wellenform, je Ausschnitt verstärkt (wie die Musikspur v5.3)
+  const i0 = Math.max(0, Math.floor(MC.off * MC_HZ)), i1 = Math.min(w.voll.length, Math.ceil((MC.off + W / pps) * MC_HZ));
+  const lauf = (arr, exp, farbe) => {
+    if (!arr) return;
+    let hi = 0; const proben = [];
+    for (let i = i0; i < i1; i++) { if (arr[i] > hi) hi = arr[i]; if ((i & 3) === 0) proben.push(arr[i]); }
+    proben.sort((a, b) => a - b);
+    const lo = Math.min(hi * 0.8, proben[Math.floor(proben.length * 0.15)] || 0);
+    if (hi <= 0) return;
+    c.fillStyle = farbe;
+    const breite = Math.max(1, pps / MC_HZ);
+    for (let i = i0; i < i1; i++) {
+      const v = Math.pow(clamp((arr[i] - lo) / Math.max(1e-6, hi - lo), 0, 1), exp), x = mcXOf(i / MC_HZ), hv = Math.max(1, v * hh / 2);
+      c.fillRect(x, mid - hv, breite, hv * 2);
+    }
+  };
+  lauf(w.voll, 1.3, '#2f6b55'); lauf(w.bass, 1.6, '#7dffc0');
+  // Cuts und Szenenlängen
+  const cuts = MC.cuts;
+  c.font = '600 12px -apple-system, Segoe UI, sans-serif';
+  [0, ...cuts, w.dur].forEach((t, i, a) => {
+    if (!i) return;
+    const a0 = a[i - 1], x0 = mcXOf(a0), x1 = mcXOf(t);
+    if (x1 - x0 > 34 && x1 > 0 && x0 < W) { c.fillStyle = '#c9ccd2'; c.fillText(BTV.fmtS(t - a0) + ' s', Math.max(x0, 0) + 5, H - 8); }
+  });
+  cuts.forEach((t, i) => {
+    const x = mcXOf(t); if (x < -10 || x > W + 10) return;
+    const s = i === MC.sel;
+    c.fillStyle = s ? '#fff' : '#f2c14e'; c.fillRect(x - (s ? 1.5 : 1), top - 2, s ? 3 : 2, hh + 4);
+    c.beginPath(); c.moveTo(x - 7, top - 2); c.lineTo(x + 7, top - 2); c.lineTo(x, top + 8); c.fill();
+  });
+  // Abspielkopf
+  const px = mcXOf(mcT()); c.fillStyle = '#e5484d'; c.fillRect(px - 1, 0, 2, H);
+  $('muCutZeit').textContent = `${muZeit(mcSongZeit(mcT()))}`;
+  $('muCutWeg').disabled = $('muCutLinks').disabled = $('muCutRechts').disabled = MC.sel < 0;
+}
+function mcSchleife() {
+  if (!MC || !MC.audio || MC.audio.paused) return;
+  const t = mcT(), sicht = MC.w.dur / MC.zoom;
+  if (t > MC.off + sicht * 0.85 || t < MC.off) { MC.off = t - sicht * 0.15; mcOffKlemmen(); }
+  mcZeichnen(); requestAnimationFrame(mcSchleife);
+}
+// Einrasten: stärkster Bass-Ausschlag knapp vor/nach der getippten Stelle (Tipp-Verzögerung ≈ 0,1 s)
+function mcEinrasten(t) {
+  if (!$('muCutSnap').checked) return t;
+  const arr = MC.w.bass || MC.w.voll, a = Math.max(0, Math.round((t - 0.16) * MC_HZ)), e = Math.min(arr.length - 1, Math.round((t + 0.08) * MC_HZ));
+  let best = -1, bi = -1;
+  for (let i = a; i <= e; i++) if (arr[i] > best) { best = arr[i]; bi = i; }
+  // Anschlag = Anstieg vor der Spitze: ein Schritt zurück, solange es dort deutlich leiser ist
+  while (bi > a && arr[bi - 1] > arr[bi] * 0.75) bi--;
+  return bi >= 0 ? bi / MC_HZ : t;
+}
+function mcCutSetzen(t) {
+  if (!MC || !MC.w) return;
+  t = clamp(t, 0.05, MC.w.dur - 0.05);
+  const nah = MC.cuts.findIndex((x) => Math.abs(x - t) < 0.12);
+  if (nah >= 0) { MC.sel = nah; mcZeichnen(); return; }
+  MC.cuts.push(t); MC.cuts.sort((a, b) => a - b); MC.sel = MC.cuts.indexOf(t);
+  mcInfo(); mcZeichnen();
+}
+$('muCutSetzen').onclick = () => { if (MC && MC.w) mcCutSetzen(MC.audio && !MC.audio.paused ? mcEinrasten(mcT()) : mcT()); };
+$('muCutPlay').onclick = () => {
+  if (!MC || !MC.audio) return;
+  if (MC.audio.paused) { MC.audio.play().then(() => { $('muCutPlay').textContent = '❚❚'; requestAnimationFrame(mcSchleife); }).catch(() => toast('Abspielen nicht möglich')); }
+  else { MC.audio.pause(); $('muCutPlay').textContent = '▶'; mcZeichnen(); }
+};
+const mcSchieben = (dt) => { if (!MC || MC.sel < 0) return; const t = clamp(MC.cuts[MC.sel] + dt, 0.05, MC.w.dur - 0.05); MC.cuts[MC.sel] = t; MC.cuts.sort((a, b) => a - b); MC.sel = MC.cuts.indexOf(t); mcInfo(); mcZeichnen(); };
+$('muCutLinks').onclick = () => mcSchieben(-1 / MC_FPS);
+$('muCutRechts').onclick = () => mcSchieben(1 / MC_FPS);
+$('muCutWeg').onclick = () => { if (!MC || MC.sel < 0) return; MC.cuts.splice(MC.sel, 1); MC.sel = -1; mcInfo(); mcZeichnen(); };
+$('muCutLeeren').onclick = () => { if (!MC || !MC.cuts.length || !confirm('Alle Cuts dieses Songs löschen?')) return; MC.cuts = []; MC.sel = -1; mcInfo(); mcZeichnen(); };
+$('muCutZoom').onclick = () => {
+  if (!MC || !MC.w) return;
+  const t = mcT(), z = MC.zoom >= 8 ? 1 : MC.zoom * 2;
+  MC.zoom = z; MC.off = t - MC.w.dur / z / 2; mcOffKlemmen();
+  $('muCutZoom').textContent = `🔍 ${z}×`; mcZeichnen();
+};
+$('muCutZu').onclick = () => muCutZu();
+mcCv.addEventListener('pointerdown', (e) => {
+  if (!MC || !MC.w) return;
+  try { mcCv.setPointerCapture(e.pointerId); } catch { /* egal */ }
+  const r = mcCv.getBoundingClientRect(), x = e.clientX - r.left;
+  const i = MC.cuts.findIndex((t) => Math.abs(mcXOf(t) - x) < 16);
+  MC.g = { x0: e.clientX, off0: MC.off, cut: i, moved: false, t0: performance.now() };
+  if (i >= 0) { MC.sel = i; mcZeichnen(); }
+});
+mcCv.addEventListener('pointermove', (e) => {
+  if (!MC || !MC.g) return;
+  const g = MC.g, dx = e.clientX - g.x0;
+  if (Math.abs(dx) > 6) g.moved = true;
+  if (!g.moved) return;
+  if (g.cut >= 0) {   // Cut ziehen
+    const r = mcCv.getBoundingClientRect(), t = clamp(mcTOf(e.clientX - r.left), 0.05, MC.w.dur - 0.05);
+    MC.cuts[MC.sel] = t; mcZeichnen();
+  } else { MC.off = g.off0 - dx / mcPps(); mcOffKlemmen(); mcZeichnen(); }   // blättern
+});
+const mcLos = (e) => {
+  if (!MC || !MC.g) return;
+  const g = MC.g; MC.g = null;
+  if (g.cut >= 0) { if (g.moved) { const t = MC.cuts[MC.sel]; MC.cuts.sort((a, b) => a - b); MC.sel = MC.cuts.indexOf(t); mcInfo(); } mcZeichnen(); return; }
+  if (!g.moved) {   // Tippen: Abspielkopf hierher, Auswahl aufheben
+    const r = mcCv.getBoundingClientRect(), t = clamp(mcTOf(e.clientX - r.left), 0, MC.w.dur);
+    if (MC.audio) MC.audio.currentTime = t;
+    MC.sel = -1; mcZeichnen();
+  }
+};
+mcCv.addEventListener('pointerup', mcLos); mcCv.addEventListener('pointercancel', mcLos);
+window.addEventListener('resize', () => { if (MC && MC.w) mcGroesse(); });
 $('btnMusik').onclick = () => muFenster();
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') muPruefen(false); });
 setInterval(() => { if (document.visibilityState === 'visible') muPruefen(false); }, 180000);

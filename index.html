@@ -12,7 +12,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="icon" href="icon-192.png">
-<link rel="stylesheet" href="styles.css?v=5.4">
+<link rel="stylesheet" href="styles.css?v=5.5">
 </head>
 <body>
 
@@ -192,11 +192,26 @@
 
 <!-- Dialoge -->
 <div id="modal" class="modal hidden"><div class="modal-box" id="modalBox"></div></div>
+<div id="muCut" class="mucut hidden">
+  <div class="mucut-kopf"><div class="mucut-titel"><b id="muCutTitel"></b><div id="muCutInfo" class="hint"></div></div>
+    <button id="muCutZu" class="primary">Fertig</button></div>
+  <canvas id="muCutCv" class="mucut-cv"></canvas>
+  <div class="mucut-knoepfe">
+    <button id="muCutPlay" class="mucut-rund">▶</button><span id="muCutZeit" class="mucut-zeit">0:00</span>
+    <button id="muCutSetzen" class="gold mucut-gross">✂ Cut</button>
+    <span class="mucut-gruppe"><button id="muCutLinks" title="gewählten Cut 1 Bild früher">◀</button><button id="muCutWeg" class="danger" title="gewählten Cut löschen">✕ Cut</button><button id="muCutRechts" title="gewählten Cut 1 Bild später">▶</button></span>
+    <button id="muCutZoom">🔍 1×</button>
+    <label class="mucut-snap"><input type="checkbox" id="muCutSnap" checked> auf Schlag einrasten</label>
+    <button id="muCutLeeren" class="ghost danger">Alle löschen</button>
+  </div>
+  <div class="hint mucut-hilfe">Abspielen und im Takt auf „✂ Cut“ tippen – oder in die Wellenform tippen (Abspielkopf) und dann „✂ Cut“. Cut antippen = auswählen,
+    ziehen = verschieben. Wellenform ziehen = blättern. Grün hell = Bass/Schlag.</div>
+</div>
 <div id="toast" class="toast hidden"></div>
 
-<script src="vertrag.js?v=5.4"></script>
-<script src="app.js?v=5.4"></script>
-<script src="slip.js?v=5.4"></script>
-<script src="sequenz.js?v=5.4"></script>
+<script src="vertrag.js?v=5.5"></script>
+<script src="app.js?v=5.5"></script>
+<script src="slip.js?v=5.5"></script>
+<script src="sequenz.js?v=5.5"></script>
 </body>
 </html>

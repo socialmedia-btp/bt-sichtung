@@ -283,6 +283,23 @@ body.fs.ui-weg .ui-griff { display: block; position: fixed; left: 50%; bottom: c
 .mu-player .mu-pos { flex: 1; min-width: 0; height: 32px; accent-color: #f2c14e; }
 .mu-player .mu-zeit { font: 600 13px ui-monospace, Menlo, Consolas, monospace; color: var(--muted); min-width: 92px; text-align: right; }
 .mu-player .mu-rec { min-width: 46px; min-height: 46px; border-radius: 23px; font-size: 18px; }
+.mu-player .mu-cut { min-height: 46px; border-radius: 23px; padding: 0 14px; font-weight: 600; white-space: nowrap; }
+.mu-player .mu-cut.hat { background: #f2c14e; color: #111; }
+/* v5.5 Song-Schnitt */
+.mucut { position: fixed; inset: 0; z-index: 12; background: var(--bg, #0b0b0d); display: flex; flex-direction: column; gap: 10px;
+  padding: max(12px, var(--safe-t)) calc(14px + var(--safe-r)) calc(12px + var(--safe-b)) calc(14px + var(--safe-l)); }
+.mucut-kopf { display: flex; align-items: flex-start; gap: 12px; }
+.mucut-titel { flex: 1; min-width: 0; font-size: 17px; }
+.mucut-kopf button { min-height: 44px; padding: 0 20px; }
+.mucut-cv { flex: 1 1 auto; min-height: 160px; width: 100%; border-radius: 12px; background: #121417; touch-action: none; display: block; }
+.mucut-knoepfe { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.mucut-knoepfe button { min-height: 48px; }
+.mucut-rund { min-width: 52px; border-radius: 26px; font-size: 18px; }
+.mucut-gross { min-width: 130px; font-size: 18px; font-weight: 700; }
+.mucut-gruppe { display: inline-flex; gap: 4px; }
+.mucut-zeit { font: 600 14px ui-monospace, Menlo, Consolas, monospace; color: var(--muted); min-width: 96px; }
+.mucut-snap { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; color: var(--muted); }
+.mucut-hilfe { font-size: 12px; }
 .mu-player .mu-rec.rec { background: var(--red); color: #fff; animation: pnPuls 1.2s ease-in-out infinite; }
 .mu-allg { border: 1px dashed #f2c14e66; }
 .mu-allg .t { flex: 1; min-width: 0; }
