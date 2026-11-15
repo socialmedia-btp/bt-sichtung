@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v5.6';
+const APP_VERSION = 'v5.7';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -466,6 +466,7 @@ async function openProject(id) {
   // Footage-Zeiten auch dann setzen, wenn das Projekt im Edit-Tab startet (Export braucht sie)
   for (const c of S.footClips) c.s = c.s0 + (S.ps.shortlist.offsets[c.track] || 0);
   S.hist = {}; S.state = null; S.ver = null;
+  if (await gleichnamigeAusduennen()) await DB.put('state', JSON.parse(JSON.stringify(S.ps)), id);
 
   // Blob-URLs + Filmstreifen
   for (const c of S.footClips) {
@@ -3634,12 +3635,30 @@ async function importVersionPairInner(files) {
     if (w) { ver.ctx = await ctxFromStand(w, ver); delete S.ps.wartend[m.version_id]; }
     S.ps.versions.push(ver); neu = true;
   }
+  const ersetzt = await gleichnamigeAusduennen();
   S.proj.bytes = (S.proj.bytes || 0) + blob.size; DB.put('projects', S.proj);
   log('version-import', { version: m.version_id, export: m.export.export_id, mb: +(blob.size / 1e6).toFixed(1), neu, shots: m.shots.length });
   closeModal();
   save(true);
   await enterContext('edit', ver.version_id);
-  toast(neu ? `Version ${verLabel(ver)} importiert – ${m.shots.filter((s) => s.editierbar).length} Shots änderbar` : `Version ${verLabel(ver)} aktualisiert – Kommentare bleiben`, 4000);
+  toast(ersetzt ? `Version ${verLabel(ver)} geladen – ältere gleichnamige Version ersetzt` : neu ? `Version ${verLabel(ver)} importiert – ${m.shots.filter((s) => s.editierbar).length} Shots änderbar` : `Version ${verLabel(ver)} aktualisiert – Kommentare bleiben`, 4000);
+}
+// Robert 15.11.: von gleichnamigen Versionen (z. B. viermal „Hauptvideo … V4“) bleibt auf dem Gerät nur die zuletzt geladene
+async function gleichnamigeAusduennen() {
+  if (!S.ps || !S.ps.versions || S.ps.versions.length < 2) return 0;
+  const name = (v) => ((v.manifest && v.manifest.sequenz) || '').trim().toLowerCase();
+  const neueste = new Map();
+  for (const v of S.ps.versions) { const n = name(v), a = neueste.get(n); if (n && (!a || (v.imported || 0) >= (a.imported || 0))) neueste.set(n, v); }
+  const weg = S.ps.versions.filter((v) => name(v) && neueste.get(name(v)) !== v);
+  for (const v of weg) {
+    await DB.del('files', v.file).catch(() => {});
+    for (const s of v.ctx.selections || []) for (const n of s.notes || []) await DB.del('notes', n.id).catch(() => {});
+    S.urls.delete('v:' + v.version_id); if (S.hist) delete S.hist[v.version_id];
+    if (S.ps.activeVersion === v.version_id) S.ps.activeVersion = neueste.get(name(v)).version_id;
+    log('version-ersetzt', { alt: v.version_id, neu: neueste.get(name(v)).version_id });
+  }
+  if (weg.length) S.ps.versions = S.ps.versions.filter((v) => !weg.includes(v));
+  return weg.length;
 }
 function deleteVersion(v) {
   if (!v) return;
