@@ -12,7 +12,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="icon" href="icon-192.png">
-<link rel="stylesheet" href="styles.css?v=5.5">
+<link rel="stylesheet" href="styles.css?v=5.6">
 </head>
 <body>
 
@@ -197,6 +197,7 @@
     <button id="muCutZu" class="primary">Fertig</button></div>
   <canvas id="muCutCv" class="mucut-cv"></canvas>
   <div class="mucut-knoepfe">
+    <button id="muCutAnfang" title="an den Anfang">⏮</button><button id="muCutZurueck" title="5 Sekunden zurück">−5 s</button>
     <button id="muCutPlay" class="mucut-rund">▶</button><span id="muCutZeit" class="mucut-zeit">0:00</span>
     <button id="muCutSetzen" class="gold mucut-gross">✂ Cut</button>
     <span class="mucut-gruppe"><button id="muCutLinks" title="gewählten Cut 1 Bild früher">◀</button><button id="muCutWeg" class="danger" title="gewählten Cut löschen">✕ Cut</button><button id="muCutRechts" title="gewählten Cut 1 Bild später">▶</button></span>
@@ -204,14 +205,14 @@
     <label class="mucut-snap"><input type="checkbox" id="muCutSnap" checked> auf Schlag einrasten</label>
     <button id="muCutLeeren" class="ghost danger">Alle löschen</button>
   </div>
-  <div class="hint mucut-hilfe">Abspielen und im Takt auf „✂ Cut“ tippen – oder in die Wellenform tippen (Abspielkopf) und dann „✂ Cut“. Cut antippen = auswählen,
-    ziehen = verschieben. Wellenform ziehen = blättern. Grün hell = Bass/Schlag.</div>
+  <div class="hint mucut-hilfe">Abspielen und im Takt auf „✂ Cut“ tippen. In die Wellenform tippen oder ziehen = Abspielkopf dorthin (auch zurück, auch beim Abspielen).
+    Cut antippen = auswählen, ziehen = verschieben. Gezoomt: unten im Balken ziehen = blättern. Grün hell = Bass/Schlag.</div>
 </div>
 <div id="toast" class="toast hidden"></div>
 
-<script src="vertrag.js?v=5.5"></script>
-<script src="app.js?v=5.5"></script>
-<script src="slip.js?v=5.5"></script>
-<script src="sequenz.js?v=5.5"></script>
+<script src="vertrag.js?v=5.6"></script>
+<script src="app.js?v=5.6"></script>
+<script src="slip.js?v=5.6"></script>
+<script src="sequenz.js?v=5.6"></script>
 </body>
 </html>

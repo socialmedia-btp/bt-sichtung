@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v5.5';
+const APP_VERSION = 'v5.6';
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -2857,7 +2857,7 @@ function mcZeichnen() {
   if (!MC || !MC.w) return;
   const d = devicePixelRatio || 1, W = mcCv.width / d, H = mcCv.height / d, c = mcCtx, w = MC.w;
   c.setTransform(d, 0, 0, d, 0, 0); c.clearRect(0, 0, W, H);
-  const RUL = 22, top = RUL + 4, hh = H - top - 26, mid = top + hh / 2;
+  const OV = MC.zoom > 1 ? 18 : 0, RUL = 22, top = RUL + 4, hh = H - top - 26 - OV, mid = top + hh / 2;
   // Zeitlineal (Song-Zeit)
   c.fillStyle = '#8b9098'; c.font = '11px -apple-system, Segoe UI, sans-serif';
   const pps = mcPps(), schritt = pps > 60 ? 1 : pps > 25 ? 2 : pps > 10 ? 5 : 10;
@@ -2887,7 +2887,7 @@ function mcZeichnen() {
   [0, ...cuts, w.dur].forEach((t, i, a) => {
     if (!i) return;
     const a0 = a[i - 1], x0 = mcXOf(a0), x1 = mcXOf(t);
-    if (x1 - x0 > 34 && x1 > 0 && x0 < W) { c.fillStyle = '#c9ccd2'; c.fillText(BTV.fmtS(t - a0) + ' s', Math.max(x0, 0) + 5, H - 8); }
+    if (x1 - x0 > 34 && x1 > 0 && x0 < W) { c.fillStyle = '#c9ccd2'; c.fillText(BTV.fmtS(t - a0) + ' s', Math.max(x0, 0) + 5, H - 8 - OV); }
   });
   cuts.forEach((t, i) => {
     const x = mcXOf(t); if (x < -10 || x > W + 10) return;
@@ -2895,8 +2895,17 @@ function mcZeichnen() {
     c.fillStyle = s ? '#fff' : '#f2c14e'; c.fillRect(x - (s ? 1.5 : 1), top - 2, s ? 3 : 2, hh + 4);
     c.beginPath(); c.moveTo(x - 7, top - 2); c.lineTo(x + 7, top - 2); c.lineTo(x, top + 8); c.fill();
   });
+  // Übersicht beim Zoomen (v5.6): ganzer Song, heller Rahmen = sichtbarer Ausschnitt; darin ziehen = blättern
+  if (OV) {
+    const y0 = H - OV + 4, k = W / w.dur;
+    c.fillStyle = '#23262b'; c.fillRect(0, y0, W, OV - 6);
+    c.fillStyle = '#f2c14e'; for (const t of cuts) c.fillRect(t * k, y0, 1, OV - 6);
+    c.strokeStyle = '#e8e8ec'; c.lineWidth = 2; c.strokeRect(MC.off * k + 1, y0, (w.dur / MC.zoom) * k - 2, OV - 6);
+    c.fillStyle = '#e5484d'; c.fillRect(mcT() * k - 1, y0, 2, OV - 6);
+  }
   // Abspielkopf
-  const px = mcXOf(mcT()); c.fillStyle = '#e5484d'; c.fillRect(px - 1, 0, 2, H);
+  const px = mcXOf(mcT()); c.fillStyle = '#e5484d'; c.fillRect(px - 1, 0, 2, H - OV);
+  c.beginPath(); c.moveTo(px - 7, 0); c.lineTo(px + 7, 0); c.lineTo(px, 9); c.fill();
   $('muCutZeit').textContent = `${muZeit(mcSongZeit(mcT()))}`;
   $('muCutWeg').disabled = $('muCutLinks').disabled = $('muCutRechts').disabled = MC.sel < 0;
 }
@@ -2924,10 +2933,21 @@ function mcCutSetzen(t) {
   MC.cuts.push(t); MC.cuts.sort((a, b) => a - b); MC.sel = MC.cuts.indexOf(t);
   mcInfo(); mcZeichnen();
 }
+// Abspielkopf setzen (v5.6, Robert 15.11.: „man kann nicht mehr zurück“) – auch beim Abspielen; gezoomt folgt die Ansicht
+function mcSpulen(t) {
+  if (!MC || !MC.w) return;
+  t = clamp(t, 0, Math.max(0, MC.w.dur - 0.02));
+  if (MC.audio) { try { MC.audio.currentTime = t; } catch { /* noch nicht geladen */ } }
+  const sicht = MC.w.dur / MC.zoom;
+  if (t < MC.off || t > MC.off + sicht) { MC.off = t - sicht * 0.15; mcOffKlemmen(); }
+  mcZeichnen();
+}
+$('muCutAnfang').onclick = () => mcSpulen(0);
+$('muCutZurueck').onclick = () => mcSpulen(mcT() - 5);
 $('muCutSetzen').onclick = () => { if (MC && MC.w) mcCutSetzen(MC.audio && !MC.audio.paused ? mcEinrasten(mcT()) : mcT()); };
 $('muCutPlay').onclick = () => {
   if (!MC || !MC.audio) return;
-  if (MC.audio.paused) { MC.audio.play().then(() => { $('muCutPlay').textContent = '❚❚'; requestAnimationFrame(mcSchleife); }).catch(() => toast('Abspielen nicht möglich')); }
+  if (MC.audio.paused) { if (MC.audio.ended || mcT() >= MC.w.dur - 0.05) mcSpulen(0); MC.audio.play().then(() => { $('muCutPlay').textContent = '❚❚'; requestAnimationFrame(mcSchleife); }).catch(() => toast('Abspielen nicht möglich')); }
   else { MC.audio.pause(); $('muCutPlay').textContent = '▶'; mcZeichnen(); }
 };
 const mcSchieben = (dt) => { if (!MC || MC.sel < 0) return; const t = clamp(MC.cuts[MC.sel] + dt, 0.05, MC.w.dur - 0.05); MC.cuts[MC.sel] = t; MC.cuts.sort((a, b) => a - b); MC.sel = MC.cuts.indexOf(t); mcInfo(); mcZeichnen(); };
@@ -2945,30 +2965,30 @@ $('muCutZu').onclick = () => muCutZu();
 mcCv.addEventListener('pointerdown', (e) => {
   if (!MC || !MC.w) return;
   try { mcCv.setPointerCapture(e.pointerId); } catch { /* egal */ }
-  const r = mcCv.getBoundingClientRect(), x = e.clientX - r.left;
+  const r = mcCv.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  if (MC.zoom > 1 && y > r.height - 22) {   // Übersichtsbalken: Ausschnitt dorthin
+    MC.g = { art: 'blaettern' }; MC.off = (x / r.width) * MC.w.dur - MC.w.dur / MC.zoom / 2; mcOffKlemmen(); mcZeichnen(); return;
+  }
   const i = MC.cuts.findIndex((t) => Math.abs(mcXOf(t) - x) < 16);
-  MC.g = { x0: e.clientX, off0: MC.off, cut: i, moved: false, t0: performance.now() };
-  if (i >= 0) { MC.sel = i; mcZeichnen(); }
+  MC.g = { art: i >= 0 ? 'cut' : 'kopf', x0: e.clientX, cut: i, moved: false };
+  if (i >= 0) { MC.sel = i; mcZeichnen(); return; }
+  MC.sel = -1; mcSpulen(mcTOf(x));
 });
 mcCv.addEventListener('pointermove', (e) => {
   if (!MC || !MC.g) return;
-  const g = MC.g, dx = e.clientX - g.x0;
-  if (Math.abs(dx) > 6) g.moved = true;
+  const g = MC.g, r = mcCv.getBoundingClientRect(), x = e.clientX - r.left;
+  if (g.art === 'blaettern') { MC.off = (x / r.width) * MC.w.dur - MC.w.dur / MC.zoom / 2; mcOffKlemmen(); mcZeichnen(); return; }
+  if (Math.abs(e.clientX - g.x0) > 6) g.moved = true;
   if (!g.moved) return;
-  if (g.cut >= 0) {   // Cut ziehen
-    const r = mcCv.getBoundingClientRect(), t = clamp(mcTOf(e.clientX - r.left), 0.05, MC.w.dur - 0.05);
-    MC.cuts[MC.sel] = t; mcZeichnen();
-  } else { MC.off = g.off0 - dx / mcPps(); mcOffKlemmen(); mcZeichnen(); }   // blättern
+  if (g.art === 'cut') {   // Cut ziehen
+    MC.cuts[MC.sel] = clamp(mcTOf(x), 0.05, MC.w.dur - 0.05); mcZeichnen();
+  } else mcSpulen(mcTOf(clamp(x, 0, r.width)));   // Abspielkopf ziehen – am Rand blättert die Ansicht mit
 });
 const mcLos = (e) => {
   if (!MC || !MC.g) return;
   const g = MC.g; MC.g = null;
-  if (g.cut >= 0) { if (g.moved) { const t = MC.cuts[MC.sel]; MC.cuts.sort((a, b) => a - b); MC.sel = MC.cuts.indexOf(t); mcInfo(); } mcZeichnen(); return; }
-  if (!g.moved) {   // Tippen: Abspielkopf hierher, Auswahl aufheben
-    const r = mcCv.getBoundingClientRect(), t = clamp(mcTOf(e.clientX - r.left), 0, MC.w.dur);
-    if (MC.audio) MC.audio.currentTime = t;
-    MC.sel = -1; mcZeichnen();
-  }
+  if (g.art === 'cut' && g.moved) { const t = MC.cuts[MC.sel]; MC.cuts.sort((a, b) => a - b); MC.sel = MC.cuts.indexOf(t); mcInfo(); }
+  mcZeichnen();
 };
 mcCv.addEventListener('pointerup', mcLos); mcCv.addEventListener('pointercancel', mcLos);
 window.addEventListener('resize', () => { if (MC && MC.w) mcGroesse(); });
