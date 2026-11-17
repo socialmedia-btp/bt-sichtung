@@ -9,7 +9,7 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v5.8b';
+const APP_VERSION = 'v5.8c';
 let PRUEF = new Set(), frZeit = 0; const FREI = new Map();   // FREI: hier gerade freigegeben (Cloudflare-Listen hängen bis ~60 s nach)   // v5.8: Export-IDs der Prüfversionen (Kunden-Freigabe), Zeit der letzten Prüfung
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
@@ -4056,6 +4056,13 @@ async function frFreigeben() {
   });
 }
 $('btnFreigabe').onclick = () => frFreigeben();
+// v5.8c (Robert 17.11.): Ein Download-Link darf das Fenster nicht „verbrauchen“ – es bleibt offen bzw. kommt nach der Rückkehr
+// aus OneDrive wieder (iPad lädt die App dabei oft neu), bis man ✕/Fertig tippt oder alles löscht.
+function finZu() { try { sessionStorage.removeItem('fp-fin-offen'); } catch { /* privat */ } closeModal(); }
+const finWarOffen = () => { try { return sessionStorage.getItem('fp-fin-offen') === '1'; } catch { return false; } };
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && S.proj && finWarOffen() && finDaten && $('modal').classList.contains('hidden')) finFenster();
+});
 async function finPruefen() {
   if (!S.proj) return;
   try {
@@ -4068,19 +4075,20 @@ async function finPruefen() {
     if (!link.abgeschlossen) await abgeschlossenMerken({ sequenz: finDaten.sequenz, zeit: finDaten.erstellt });   // z. B. auf einem anderen Gerät abgeschlossen
     const neu = S.ps && S.ps.finalGesehen !== finDaten.erstellt;
     b.classList.toggle('neu', neu);
-    if (neu && $('modal').classList.contains('hidden')) finFenster();
+    if ((neu || finWarOffen()) && $('modal').classList.contains('hidden')) finFenster();
   } catch { /* offline */ }
 }
 function finFenster(fd = finDaten, link = null) {
   if (!fd) return;
   const name = { instagram: 'Instagram', tiktok: 'TikTok', youtube: 'YouTube', master: 'Master' };
   const aufrOk = !!S.proj && !link;   // Aufräumen aus dem offenen Projekt heraus
-  modal(`<h2>🏁 Deine Final-Dateien</h2><p class="hint">${esc(fd.sequenz || '')} – tippen öffnet OneDrive (dort herunterladen).
+  try { sessionStorage.setItem('fp-fin-offen', '1'); } catch { /* privat */ }   // v5.8c: nach Rückkehr aus OneDrive wieder öffnen
+  modal(`<button class="ghost fin-x" onclick="finZu()" title="Schließen">✕</button><h2>🏁 Deine Final-Dateien</h2><p class="hint">${esc(fd.sequenz || '')} – tippen öffnet OneDrive (dort herunterladen).
     Die Links bleiben gültig, auch wenn du hier alles löschst.</p>
     ${(fd.dateien || []).map((d) => `<a class="pn-rec gold" style="display:block;text-align:center;text-decoration:none;margin:8px 0"
       href="${esc(d.url)}" target="_blank" rel="noopener">⬇ ${esc(name[d.zweck] || d.zweck)}${d.bytes ? ` · ${(d.bytes / 1e6).toFixed(0)} MB` : ''}</a>`).join('')}
     ${aufrOk ? '<button id="finAufr" class="pn-rec" style="background:var(--panel2)">🧹 Alles löschen &amp; Speicher freigeben</button>' : ''}
-    <div class="row"><span class="grow"></span><button class="primary" onclick="closeModal()">OK</button></div>`, (b) => {
+    <div class="row"><span class="grow"></span><button class="primary" onclick="finZu()">Fertig</button></div>`, (b) => {
     const a = b.querySelector('#finAufr'); if (a) { a.onclick = () => aufraeumenFragen(); aufrKnopfBeschriften(b); }
   });
   if (S.ps && !link) { S.ps.finalGesehen = fd.erstellt; save(); }

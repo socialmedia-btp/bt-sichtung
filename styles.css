@@ -467,3 +467,7 @@ body.fs.reel .cutbar { bottom: 350px; }
 /* v5.8a: Links als Knöpfe (Final-Dateien) – vorher blauer Standard-Link auf dunklem Grund */
 a.pn-rec{display:flex !important;align-items:center;justify-content:center;border-radius:10px;text-decoration:none;color:var(--text);background:var(--panel2)}
 a.pn-rec.gold{background:linear-gradient(180deg,#f7d36a,#d9a521);color:#1c1000;font-weight:700;box-shadow:0 0 0 1px #f2c14e55}
+
+/* v5.8c: Schließen-Kreuz im Final-Fenster */
+.modal-box{position:relative}
+.fin-x{position:absolute;top:10px;right:10px;min-width:40px;font-size:20px;color:var(--muted)}
