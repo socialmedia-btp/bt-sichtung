@@ -465,5 +465,5 @@ body.fs.reel .cutbar { bottom: 350px; }
 .fr-wa-wahl .hint{display:block;margin-top:4px}
 
 /* v5.8a: Links als Knöpfe (Final-Dateien) – vorher blauer Standard-Link auf dunklem Grund */
-a.pn-rec{display:flex;align-items:center;justify-content:center;border-radius:10px;text-decoration:none;color:var(--text);background:var(--panel2)}
+a.pn-rec{display:flex !important;align-items:center;justify-content:center;border-radius:10px;text-decoration:none;color:var(--text);background:var(--panel2)}
 a.pn-rec.gold{background:linear-gradient(180deg,#f7d36a,#d9a521);color:#1c1000;font-weight:700;box-shadow:0 0 0 1px #f2c14e55}

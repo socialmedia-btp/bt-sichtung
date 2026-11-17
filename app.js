@@ -9,7 +9,7 @@ const GAP = 2;                 // L체cken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Dr체cken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v5.8a';
+const APP_VERSION = 'v5.8b';
 let PRUEF = new Set(), frZeit = 0; const FREI = new Map();   // FREI: hier gerade freigegeben (Cloudflare-Listen h채ngen bis ~60 s nach)   // v5.8: Export-IDs der Pr체fversionen (Kunden-Freigabe), Zeit der letzten Pr체fung
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
