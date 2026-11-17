@@ -9,7 +9,8 @@ const GAP = 2;                 // Lücken ohne Aufnahme werden auf max. 2 s gek�
 const LONGPRESS_MS = 380;
 const FINE_PX_PER_FRAME = 14;  // Lupe: so viele Pixel pro Bild
 const MARK_LONGPRESS_MS = 450; // langes Drücken auf einen Clip = In, nochmal = Out
-const APP_VERSION = 'v5.7';
+const APP_VERSION = 'v5.8';
+let PRUEF = new Set(), frZeit = 0; const FREI = new Map();   // FREI: hier gerade freigegeben (Cloudflare-Listen hängen bis ~60 s nach)   // v5.8: Export-IDs der Prüfversionen (Kunden-Freigabe), Zeit der letzten Prüfung
 const VBASE = Date.parse('2000-01-01T00:00:00.000Z') / 1000; // Zeitnullpunkt von Schnittversionen (Uhr zeigt 00:00:00)
 const TRACK_COLORS = ['#4c9aff', '#3dd68c', '#c084fc', '#ff8a4c', '#f472b6', '#22d3ee'];
 const $ = (id) => document.getElementById(id);
@@ -200,7 +201,7 @@ async function bkOffen(nurPid) {
   return out;
 }
 const angebotHtml = ({ v }, i) => `<div class="proj neu"><div class="info"><div class="name">📥 ${esc(v.sequenz)}</div>
-  <div class="meta">${esc(v.projekt || '')} · neue Version zum Prüfen · ${durTxt(v.dauer || 0)} · ${(v.bytes / 1e6).toFixed(0)} MB</div></div>
+  <div class="meta">${v.pruefung ? '🔒 Prüfversion – noch nicht beim Kunden · ' : ''}${esc(v.projekt || '')} · neue Version zum Prüfen · ${durTxt(v.dauer || 0)} · ${(v.bytes / 1e6).toFixed(0)} MB</div></div>
   <button class="primary" data-laden="${i}">Laden</button></div>`;
 const fertigHtml = (l, i) => `<div class="proj"><div class="info"><div class="name">🏁 ${esc(l.projekt || (l.aufgeraeumt && l.aufgeraeumt.projekt) || 'Projekt')}</div>
   <div class="meta">abgeschlossen · nichts mehr auf diesem Gerät gespeichert${l.aufgeraeumt && l.aufgeraeumt.bytes ? ` (${mbGb(l.aufgeraeumt.bytes)} freigegeben)` : ''}</div></div>
@@ -603,7 +604,9 @@ const shotAt = (sec) => { sec += 1e-4; return (S.vsegs || []).find((x) => sec >=
 function renderTabs() {
   document.querySelectorAll('#tabs [data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === S.ps.tab));
   const av = S.ps.versions.find((v) => v.version_id === S.ps.activeVersion);
-  $('verName').textContent = S.ver ? 'Version ' + verLabel(S.ver) : av ? 'Version ' + verLabel(av) : S.ps.versions.length ? 'Versionen' : '＋ Version';
+  $('verName').textContent = (S.ver && PRUEF.has(S.ver.export_id) ? '🔒 ' : '') + (S.ver ? 'Version ' + verLabel(S.ver) : av ? 'Version ' + verLabel(av) : S.ps.versions.length ? 'Versionen' : '＋ Version');
+  const fb = $('btnFreigabe'); if (fb) fb.classList.toggle('hidden', !(S.ver && PRUEF.has(S.ver.export_id)));
+  if (Date.now() - frZeit > 5000) frPruefen();   // v5.8: Prüfversion? (gedrosselt)
 }
 const verLabel = (v) => (v.manifest.sequenz.match(/v\d+\w*$/i) || [v.manifest.sequenz])[0];
 
@@ -3530,7 +3533,7 @@ function versionSheet() {
     const m = v.manifest, n = m.shots.length, ne = m.shots.filter((s) => s.editierbar).length;
     const nk = v.ctx.selections.length, nev = (v.ctx.ereignisse || []).length;
     const br = Object.values(v.ctx.bewertungen || {}), nrot = br.filter((x) => x.wert === 'rot').length;
-    return `<div class="ver${S.ver === v ? ' cur' : ''}"><div class="info"><div class="name">${esc(m.sequenz)}</div>
+    return `<div class="ver${S.ver === v ? ' cur' : ''}"><div class="info"><div class="name">${esc(m.sequenz)}${PRUEF.has(v.export_id) ? ' <span class="pruef">🔒 Prüfversion – noch nicht beim Kunden</span>' : ''}</div>
       <div class="meta">${durTxt(m.dauer_frames / m.fps)} · ${ne} von ${n} Shots änderbar · ${nk} Kommentar${nk === 1 ? '' : 'e'}${nev ? ` · ${nev} Änderung${nev === 1 ? '' : 'en'}` : ''}${br.length ? ` · ${br.length} bewertet${nrot ? ` (${nrot} rot)` : ''}` : ''}<br>
       importiert ${new Date(v.imported).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' })}</div></div>
       <button class="primary" data-open="${esc(v.version_id)}">Öffnen</button><button class="ghost danger" data-del="${esc(v.version_id)}" title="Version vom Gerät entfernen">✕</button></div>`;
@@ -3826,6 +3829,7 @@ async function bkRender() {
   b.title = fehler ? 'Ein Stand wurde abgelehnt – erneut senden oder als Datei speichern' : wartet ? 'Wartet auf Internet – wird automatisch nachgesendet' : `An Blue Tacit senden (${link.name})`;
   muPruefen(false);   // Musikvorschläge für diesen Link?
   finPruefen();       // Final-Dateien (v4.9v)?
+  frPruefen();        // Prüfversion zum Freigeben (v5.8)?
 }
 // Ein Stand-JSON an den Briefkasten (60 s Zeitgrenze). Rückgabe: 'ok' | 'netz' (→ später nochmal) | Fehlertext (endgültig)
 async function bkPost(link, body) {
@@ -3951,7 +3955,7 @@ async function bkSendenFragen() {
       <button id="bsFeedback" class="gold pn-rec">Feedback senden</button>${abschlussKnopf}
       <p class="hint">„Projekt abschließen“ nur tippen, wenn das Video so fertig ist. Dann wählst du, wofür du es brauchst, und bekommst die fertige Datei als OneDrive-Link.</p>
       <div class="row"><span class="grow"></span><button onclick="closeModal()">Abbrechen</button></div>`, (b) => {
-      b.querySelector('#bsFeedback').onclick = () => { closeModal(); bkSend(false); };
+      b.querySelector('#bsFeedback').onclick = () => { closeModal(); bkSend(false, true, false); };   // v5.8: ausdrücklich = fertig → Blue Tacit setzt um (Freigabe von Hand)
       b.querySelector('#bsAbschluss').onclick = () => abschlussFenster();
     });
     return;
@@ -4010,6 +4014,48 @@ function abschlussFenster() {
 }
 /* Final-Dateien (v4.9v): die Pipeline legt je Link {dateien:[{zweck, name, url, bytes}], sequenz} ab → 🏁 oben in der App. */
 let finDaten = null;
+/* ---------- Kunden-Freigabe (v5.8, Robert 17.11.2026) ----------
+ * Kunden-Feedback setzt der Wächter automatisch um, die neue Version liegt aber nur als PRÜFVERSION im Briefkasten (meta.pruefung):
+ * nur interne Links sehen sie. Nach dem Prüfen gibt das Team sie hier frei → Kunde bekommt „Neue Version ist da“; danach optional
+ * WhatsApp an den Kunden (wa.me mit fertigem Text – man tippt dort selbst auf Senden). */
+async function frPruefen() {
+  frZeit = Date.now();
+  const b = $('btnFreigabe'); if (!b) return;
+  try {
+    const link = S.proj ? await bkLink(await projPid(S.proj)) : null;
+    if (!link) { PRUEF = new Set(); b.classList.add('hidden'); return; }
+    const r = await (await fetch(`${link.url}/v1/versionen?k=${encodeURIComponent(link.key)}`)).json();
+    PRUEF = new Set(((r && r.versionen) || []).filter((v) => v.pruefung && !((FREI.get(v.export_id) || 0) > Date.now() - 180000)).map((v) => v.export_id));
+    b.classList.toggle('hidden', !(S.ver && PRUEF.has(S.ver.export_id)));
+    renderTabs();
+  } catch { /* offline */ }
+}
+async function frFreigeben() {
+  const ver = S.ver; if (!ver) return;
+  const link = await bkLink(await projPid(S.proj)); if (!link) return;
+  modal(`<h2>✅ An Kunden freigeben?</h2><p><b>${esc(ver.manifest.sequenz)}</b> ist eine <b>Prüfversion</b>: Das Kunden-Feedback ist umgesetzt,
+    der Kunde sieht sie noch nicht.</p><p class="hint">Nach der Freigabe bekommt der Kunde in Framepoint „🎬 Neue Version ist da“.
+    </p><label class="fr-wa-wahl"><input type="checkbox" id="frWa" checked> 💬 Kunde zusätzlich per WhatsApp benachrichtigen
+    <span class="hint">(Claude schickt die Nachricht über die WhatsApp-App am PC)</span></label>
+    <div class="row"><button onclick="closeModal()">Noch nicht</button><span class="grow"></span><button id="frJa" class="primary">Freigeben</button></div>`, (m) => {
+    m.querySelector('#frJa').onclick = async () => {
+      m.querySelector('#frJa').disabled = true;
+      const mitWa = m.querySelector('#frWa').checked;
+      let d;
+      try { d = await (await fetch(`${link.url}/v1/version/freigeben?k=${encodeURIComponent(link.key)}&e=${encodeURIComponent(ver.export_id)}${mitWa ? '&whatsapp=1' : ''}`, { method: 'POST' })).json(); }
+      catch { d = { ok: false, fehler: 'kein Internet' }; }
+      log('freigabe', { version: ver.version_id, ok: !!d.ok, kunden: (d.kunden || []).length, fehler: d.fehler });
+      if (!d.ok) { closeModal(); toast('Freigabe hat nicht geklappt: ' + (d.fehler || ''), 4500); return; }
+      PRUEF.delete(ver.export_id); FREI.set(ver.export_id, Date.now()); $('btnFreigabe').classList.add('hidden'); renderTabs();
+      const kunden = d.kunden || [];
+      modal(`<h2>Freigegeben ✓</h2><p>„${esc(d.sequenz)}“ ist jetzt beim Kunden – Framepoint zeigt ${kunden.length ? esc(kunden.map((k) => k.name).join(', ')) : 'ihm'} „Neue Version ist da“.</p>
+        ${!kunden.length ? '<p class="hint">Für dieses Projekt gibt es noch keinen Kunden-Link.</p>'
+          : d.whatsapp ? '<p class="fr-wa">💬 WhatsApp an den Kunden ist beauftragt – Claude schickt sie über die WhatsApp-App am PC.</p>' : ''}
+        <div class="row"><span class="grow"></span><button class="primary" onclick="closeModal()">OK</button></div>`);
+    };
+  });
+}
+$('btnFreigabe').onclick = () => frFreigeben();
 async function finPruefen() {
   if (!S.proj) return;
   try {
